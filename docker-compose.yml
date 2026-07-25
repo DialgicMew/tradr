@@ -1,0 +1,39 @@
+# Single-VM deployment. All services bind to 127.0.0.1 — reach the UI via
+# Tailscale or an SSH tunnel. Nothing is published on 0.0.0.0. See ARCHITECTURE.md §4.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    build: { context: ., dockerfile: docker/api.Dockerfile }
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [postgres]
+    command: uvicorn tradr.api.main:app --host 127.0.0.1 --port 8000
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  scheduler:
+    build: { context: ., dockerfile: docker/api.Dockerfile }
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [postgres]
+    command: python -m tradr.scheduler
+
+  bot:
+    build: { context: ., dockerfile: docker/api.Dockerfile }
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [postgres, api]
+    command: python -m tradr.bot   # Telegram long-polling — outbound only
+
+  # frontend (React SPA) added in a later step:
+  # frontend:
+  #   build: { context: ./frontend }
+  #   ports: ["127.0.0.1:5173:80"]

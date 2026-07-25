@@ -1,0 +1,48 @@
+# Secrets / config — NEVER commit personal data (see ARCHITECTURE.md §4a)
+.env
+.env.*
+!.env.example
+*.secret
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# DB / data — NEVER commit anyone's holdings or trade history
+*.sqlite3
+*.db
+tradr.db*
+*.db.bak*
+*.bak
+pgdata/
+backups/
+
+# Personal data (your real portfolio / broker records) — keep OUT of the public repo
+/orders/
+/imports/
+
+# Generated backtest / market-data artifacts (regenerable via backtest_engine.py)
+spy_data*.csv
+spy_chart.json
+backtest_results.json
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
