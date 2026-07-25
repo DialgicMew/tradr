@@ -8,19 +8,16 @@ confirmation (ruleset §2). Pipeline step order is significant and mirrors §4.
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
 
 from tradr.engine.models import (
     BandState,
     BandStatus,
     EngineResult,
     Macro,
-    Position,
     Signal,
     Snapshot,
 )
 from tradr.engine.params import Params
-
 
 # Tolerance for band-boundary comparisons — float makes 80/100-1 == -0.19999999996,
 # which must still count as crossing the -0.20 band.
@@ -66,7 +63,7 @@ def _dd_cumulative_target(p: Params, deepest_k: int) -> float:
     return min(p.dd_cap_mult, p.dd_first_band_mult + (deepest_k - 1) * step)
 
 
-def evaluate(snap: Snapshot) -> EngineResult:  # noqa: C901 — pipeline is intentionally linear
+def evaluate(snap: Snapshot) -> EngineResult:
     p: Params = snap.params  # type: ignore[assignment]
     result = EngineResult(reserve_balance=snap.reserve_balance)
 

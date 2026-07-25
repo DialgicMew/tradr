@@ -21,10 +21,10 @@ __all__ = [
     "Flags",
     "Macro",
     "MarketData",
+    "Params",
     "Position",
     "Signal",
     "Snapshot",
-    "Params",
     "demo_params",
     "evaluate",
 ]

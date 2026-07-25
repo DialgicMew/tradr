@@ -13,23 +13,24 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tradr.engine import (
-    BandState,
-    BandStatus,
-    Position,
-    Snapshot,
-    evaluate as engine_evaluate,
-)
 from tradr.db.models import (
     EngineStateRow,
     MarketSnapshotRow,
     SignalRow,
     UniverseRow,
 )
+from tradr.engine import (
+    BandState,
+    BandStatus,
+    Position,
+    Snapshot,
+)
+from tradr.engine import (
+    evaluate as engine_evaluate,
+)
 from tradr.market.adapter import MarketDataProvider
 from tradr.services import config_service as cfg
 from tradr.services import ledger as ledger_svc
-
 
 # --- band-state (de)serialisation: JSON uses string keys ---------------------
 

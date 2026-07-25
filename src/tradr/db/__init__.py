@@ -1,5 +1,5 @@
 """Persistence layer."""
 
-from tradr.db.base import Base, engine, init_db, session_scope, SessionLocal
+from tradr.db.base import Base, SessionLocal, engine, init_db, session_scope
 
-__all__ = ["Base", "engine", "init_db", "session_scope", "SessionLocal"]
+__all__ = ["Base", "SessionLocal", "engine", "init_db", "session_scope"]

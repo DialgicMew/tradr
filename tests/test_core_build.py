@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tradr.engine import MarketData, Position, evaluate
 from tests.conftest import make_snapshot, md, pos
+from tradr.engine import Position, evaluate
 
 
 def _core(result):

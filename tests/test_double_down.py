@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tradr.engine import BandState, BandStatus, evaluate
 from tests.conftest import make_snapshot, md, pos
+from tradr.engine import BandState, BandStatus, evaluate
 
 
 def _dd_signals(result):

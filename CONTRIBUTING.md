@@ -24,8 +24,10 @@ welcome.
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest                     # run the test suite
-ruff check src tests       # lint
-mypy src                   # type-check
+ruff check src tests       # lint (enforced in CI)
+mypy src                   # type-check (best-effort; not yet CI-enforced — there's
+                           # existing type-annotation debt, so don't worry about
+                           # pre-existing errors unrelated to your change)
 
 # frontend
 cd frontend && npm install && npm run dev
@@ -43,7 +45,29 @@ Or just `./start.sh` to bring up API + UI together.
 4. For a new market-data provider, implement the `MarketDataProvider` protocol in
    `src/tradr/market/adapter.py` and register it in `get_provider`.
 
+## Submitting a pull request
+
+1. Fork the repo and create a branch off `main` (e.g. `fix/trim-velocity-edge-case`).
+2. Make your change with tests, per "Making changes" above.
+3. Run the full check locally before opening the PR:
+   ```bash
+   pytest && ruff check src tests
+   ```
+4. Open the PR against `main` and fill in the template — it checklists the things
+   reviewers will look for (tests, purity of the engine, no personal data, docs).
+5. CI (GitHub Actions) runs the same checks automatically; a green run is required
+   before merge.
+6. Keep PRs focused — one logical change per PR is much faster to review than a bundle
+   of unrelated fixes.
+
 ## Reporting issues
 
 Include steps to reproduce and, for engine logic, a minimal snapshot (positions +
 params + market data) that shows the wrong output. Never paste real account details.
+See the bug report template for the exact shape, and [SECURITY.md](SECURITY.md) if
+the issue is a vulnerability rather than a bug.
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating,
+you're expected to uphold it.

@@ -11,7 +11,7 @@ manual UI entry. Swap in a paid provider later without touching the engine.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 import httpx
 
@@ -38,7 +38,7 @@ class YahooProvider:
     """
 
     URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-    HEADERS = {"User-Agent": "Mozilla/5.0"}
+    HEADERS: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0"}
 
     def __init__(self, client: httpx.Client | None = None) -> None:
         self._client = client or httpx.Client(timeout=15.0, headers=self.HEADERS)

@@ -82,7 +82,7 @@ class Snapshot:
     market: dict[str, MarketData]     # keyed by ticker
     band_state: dict[str, BandState]  # keyed by ticker
     reserve_balance: float
-    params: "object"                  # tradr.engine.params.Params (avoid import cycle)
+    params: object                  # tradr.engine.params.Params (avoid import cycle)
     macro: Macro = field(default_factory=Macro)
     flags: Flags = field(default_factory=Flags)
     avoid: frozenset[str] = frozenset()

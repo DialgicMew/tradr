@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 
+from tests.conftest import StubProvider
 from tradr.db.models import UniverseRow
 from tradr.engine import MarketData
 from tradr.services import config_service as cfg
 from tradr.services import ledger as L
 from tradr.services import signals as sig_svc
-from tests.conftest import StubProvider
 
 
 def _configure(db):

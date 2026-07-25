@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tradr.engine import BandState, BandStatus, evaluate
 from tests.conftest import make_snapshot, md, pos
+from tradr.engine import BandState, BandStatus, evaluate
 
 
 def _trims(result):
@@ -49,7 +49,7 @@ def test_min_weight_floor_caps_trim():
     a = pos("AAA", shares=10, avg_basis=100)          # value 2300 at price 230
     b = pos("BIG", shares=1000, avg_basis=50)         # value 100000
     snap = make_snapshot([a, b], [md("AAA", price=230), md("BIG", price=100)])
-    sig = [s for s in _trims(evaluate(snap)) if s.ticker == "AAA"][0]
+    sig = next(s for s in _trims(evaluate(snap)) if s.ticker == "AAA")
     assert sig.size_shares == 0                        # floored
     assert any("MIN_WEIGHT" in n for n in sig.notes)
 

@@ -11,7 +11,7 @@ missing — it never sizes a buy off a guessed budget.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # Ladder / asset-class constants (ruleset Appendix A.1)
 BANDS_STOCK: tuple[float, ...] = (-0.20, -0.30, -0.40, -0.50)   # [LOCKED]

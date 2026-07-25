@@ -42,6 +42,15 @@ testpaths = ["tests"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+ignore = [
+    "B008",    # FastAPI's `Depends(...)` in a default arg is the idiomatic pattern, not a bug
+    "BLE001",  # broad `except Exception` is intentional in a few fail-safe spots (adapter,
+               # bot handlers, notification path) so one bad ticker/message never crashes a run
+    "DTZ005",  # naive `datetime.now()` is fine here — used only for local audit timestamps
+    "DTZ011",  # naive `date.today()` is fine — "trade date" is a calendar date, not an instant
+]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

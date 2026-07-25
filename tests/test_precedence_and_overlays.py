@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tradr.engine import BandState, BandStatus, Flags, Macro, evaluate
 from tests.conftest import make_snapshot, md, pos
+from tradr.engine import BandState, BandStatus, Flags, Macro, evaluate
 
 
 def test_trim_beats_double_down_same_day():
@@ -30,7 +30,7 @@ def test_open_trim_suppresses_double_down_across_runs():
 def test_dca_momentum_brake_halves_deploy():
     snap = make_snapshot([pos("AAA", tier="T1")], [md("AAA", price=100, ret_30d=0.25)],
                          is_dca_day=True)
-    dca = [s for s in evaluate(snap).signals if s.rule == "base_dca"][0]
+    dca = next(s for s in evaluate(snap).signals if s.rule == "base_dca")
     # base_i 2000, auto-bank -> deploy_base 1000, ×0.5 brake -> 500.
     assert dca.size_dollars == 500
     assert any("momentum brake" in n for n in dca.notes)
@@ -40,14 +40,14 @@ def test_froth_and_brake_do_not_compound():
     macro = Macro(sp_fwd_pe=25.0, sp_10yr_avg_fwd_pe=20.0)  # 25 > 20*1.15 -> frothy
     snap = make_snapshot([pos("AAA", tier="T1")], [md("AAA", price=100, ret_30d=0.25)],
                          is_dca_day=True, macro=macro)
-    dca = [s for s in evaluate(snap).signals if s.rule == "base_dca"][0]
+    dca = next(s for s in evaluate(snap).signals if s.rule == "base_dca")
     assert dca.size_dollars == 500  # floor at 0.5, NOT 0.25
 
 
 def test_dca_normal_market_is_5050():
     snap = make_snapshot([pos("AAA", tier="T1")], [md("AAA", price=100, fwd_pe=15)],
                          is_dca_day=True)
-    dca = [s for s in evaluate(snap).signals if s.rule == "base_dca"][0]
+    dca = next(s for s in evaluate(snap).signals if s.rule == "base_dca")
     assert dca.size_dollars == 1000               # base_i/2, full speed
     assert any("bank $1,000" in n for n in dca.notes)
     assert any("strong" in n for n in dca.notes)  # PE annotation

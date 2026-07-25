@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+# Add a "Discussions" contact link here once GitHub Discussions is enabled on the repo
+# (Settings → General → Features → Discussions). Example:
+# contact_links:
+#   - name: Question / discussion
+#     url: https://github.com/<owner>/<repo>/discussions
+#     about: For questions and general discussion, use Discussions instead of an issue.
