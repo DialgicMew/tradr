@@ -95,6 +95,26 @@ engine never holds money.
 **Drawn by:**
 - **Per-stock double-down deployment** — the reserve unlocks for a name only when
   *that name* has an active double-down band (per-stock trigger, not market-level).
+- **A manually-logged fill, opt-in only.** Hand-entering a trade (Trades page) never
+  touches the reserve by default — most manual entries are ordinary contributions, not
+  reserve-funded dip-buys, and the reserve must not drain on every logged buy. A
+  **"fund this buy from reserve" / "recycle proceeds into reserve"** checkbox draws (or
+  recycles) it explicitly, for a fill you placed yourself outside the Alerts approve
+  flow, and gives it the full engine-state treatment a confirmed signal gets: it draws
+  the reserve (+fee), settles the band(s) this fill's price satisfies, and updates the
+  3× cap. **Matched by price against the ladder, not by whichever alert happens to still
+  be PENDING** — a band can sit ARMED at the exact moment you log the trade (e.g. right
+  after a void re-armed it) with the price still deep in dip territory; matching on
+  PENDING-only would treat that as nothing to settle and the very next engine run would
+  re-cross the ARMED band and re-alert for a dip you already bought. The stale alert(s)
+  this fill matched are retired immediately. Voiding such a trade reverses the reserve
+  movement but does **not** currently un-fire the band(s) or un-count the cap —
+  `void_trade` only reverses band/cap state for a signal-confirmed fill (it looks up
+  `sig.band` off the linked `SignalRow`); a manual entry has no signal to look that up
+  from. So voiding a mistaken reserve-funded manual entry leaves the ladder looking like
+  the dip was bought when it wasn't — a real gap, not a deliberate choice. For now, a bad
+  reserve-funded manual entry should be corrected by hand (re-arm the affected band(s))
+  after voiding it.
 
 **Earmarking:** the reserve may build up to `RESERVE_TARGET` (20%) and that portion
 is **committed dry powder, exempt from the cash floor**. Only reserve **above** the
@@ -103,6 +123,14 @@ target counts as idle cash.
 If a double-down suggestion exceeds available reserve, the notification **flags the
 shortfall** ("reserve short by $X — top up or fund from cash") rather than shrinking
 the suggestion. The human decides.
+
+**Append-only, and reversible by compensation.** Every movement caused by a fill records
+that fill (`source_lot_id`), so **voiding a trade reverses everything confirming it did**:
+the reserve draw and its fee are undone with `void_reversal` entries (the originals stay
+visible — nothing is deleted), the 3× cap counter gives back the headroom the fill
+consumed, and the band it latched returns to ARMED. Without that link a voided trade
+leaves the name looking both funded and capped by a trade that no longer exists, which
+silently suppresses its future dip-buys. Voiding is idempotent.
 
 ---
 
@@ -250,6 +278,73 @@ the suggestion. The human decides.
   pulls back `BRAKE_RELEASE_PCT` off that peak.** (Brake and double-down conditions
   are mutually exclusive, so no clash.)
 
+### Rule 8 — Transaction costs (IBKR Tiered)
+- Every order the engine proposes is **priced before you see it**: commission + GST +
+  exchange + clearing, itemised, as a share of the order value. No signal shows a
+  size without showing what it costs to put on.
+- **Schedule (IBKR Tiered, USD, GST 18% on commission only):**
+  - **LSE lines** (ticker suffix `.L`): 0.05% of trade value, **min USD 1.70**;
+    exchange ~USD 0.14/order (GBP 0.10 ETF min); clearing ~USD 0.08 (GBP 0.06).
+    A $400 order costs **≈ $2.23 → 0.56%**.
+  - **US lines:** USD 0.0035/share, **min USD 0.35**, max 1% of trade value;
+    clearing USD 0.00020/share. A $600 / 100-share order costs **≈ $0.43 → 0.07%**.
+- **The asymmetry is the point.** The LSE commission floor does not dilute until
+  ~$3,400 per order; the US floor is a fifth as large. Splitting entries across the
+  month is nearly free on the US side and expensive on the LSE side. Three $200 US
+  orders cost ~$0.86 extra; three $133 LSE orders cost ~$4.46 extra.
+- **Whichever pot funds the order pays the fee.**
+  - *Reserve-funded* (double-down, watch opportunity, trim): the reserve is drawn for
+    the order value **and** the fee, as two separate ledger lines (`dd_draw`, `fee`) so
+    the cost is visible rather than buried inside the draw.
+  - *Contribution-funded* (core build, base DCA, cash floor): the order is sized so
+    **shares + fee fit the contribution** — a $180 core contribution buys ~$177.77 of
+    an LSE line and hands $2.23 to IBKR. The reserve does not move.
+- **Every fill carries its cost** (`lots.fee`), whichever pot paid it, so "fees paid YTD"
+  is one query. Voiding a trade removes its fee with it.
+- **Brokerage is part of cost basis.** A buy contributes `qty × price + fee`: 1 share at
+  $100 with $1 of brokerage cost $101, so that is what it averages in at. Fills recorded
+  before fees were tracked carry `fee = 0` and average in unchanged — nothing is
+  retro-inflated. Sell fees do **not** touch basis; they reduce proceeds. Consequence
+  worth knowing: measured gains are now against true cost, so trims fire marginally later.
+- **Manual entry can pick its plan** (`Tiered` / `Fixed` / actual / none), so an old fill
+  can be costed under whichever IBKR plan it was actually traded on, independent of the
+  account's current `COMMISSION_PLAN`. For a historic trade, **entering the actual fee off
+  the statement beats any estimate.** Fixed is an all-in rate — exchange and clearing are
+  bundled into the commission rather than added on top.
+- **Order count is the only real lever.** One order = one ticker; different tickers can
+  never be merged. So fees fall only by holding fewer names, or by giving each name a
+  bigger, less frequent order. **Core rotation** (`CORE_ROTATE`, default on) does the
+  latter: instead of one order per core line every run, the whole round goes to whichever
+  line sits furthest below its intended share of the core. Same dollars in, one fee
+  minimum instead of N, and it self-rotates — buying one line makes another the most
+  underweight next run, so no rotation counter is needed.
+- **Per-order minimum (`MIN_ORDER_DOLLARS`).** Below this, an order pays the fee minimum
+  on too little money. Applied **at sizing time**, not as a filter on finished signals, so
+  reserve contention and the 3× cap both see the number that will actually be traded.
+  - An order within `MIN_ORDER_ROUNDUP_MAX` (1.25×) of the floor is **rounded up to it** —
+    one real tranche beats three dribbles. The round-up counts against the 3× cap at its
+    actual size, so a small name may spend ~3.4× base in a single order and then be done
+    for that crash cycle. That concentration is the intent, not a leak.
+  - Anything smaller is **deferred, not deleted** — and the distinction that matters:
+    **hide only what re-derives on its own; show-and-flag anything that would be lost.**
+    Dip-buys, core build and cash floor are hidden (a latched band reappears at a deeper
+    rung with a bigger target; the core gap widens; idle cash keeps sitting). Base DCA and
+    watch opportunities are **shown with a warning** — a skipped monthly contribution never
+    comes back, and a rare dip on a small name is worth knowing about even when the rule's
+    own starter size is uneconomic.
+  - **Sells are exempt.** A fee floor must never trap you in a position.
+  - Beware the interaction with `BASE_UNIT`: a floor above a tier's 3× cap excludes that
+    tier permanently, since its ladder target can never grow to reach it. Check
+    `3 × BASE_UNIT × tier_weight` against the floor for every tier before setting it.
+- **Advisory, not blocking.** An order whose cost exceeds `COST_WARN_RATIO` (0.5%)
+  carries a warning naming the single-order size that would get under the line.
+  `COST_BLOCK_RATIO` can suppress such buys outright, but ships **off**: nothing
+  accumulates a skipped contribution, so blocking would permanently starve any leg
+  whose `BASE_i` sits below break-even.
+- **Structural cost is not a bug to fix.** At a $400/month LSE contribution the core
+  leg pays ~0.56% per contribution whatever the engine does. The rule surfaces that
+  figure; it does not pretend a parameter choice removes it.
+
 ### Preconditions & hard constraints
 - **Emergency fund:** user-attested flag (6–12 months of expenses). If unset →
   **warn-only** on buy signals (does not block). Sell/trim signals unaffected.
@@ -330,6 +425,14 @@ them; it does not decide them.
 | `FROTH_THRESHOLD` | **+15 % above 10-yr avg fwd P/E** | [DEFAULT] | Moderate premium; lands near the source's "fair→risky" zone. |
 | `CASH_CEILING` | **5 %** | [DEFAULT] | Lowered from 20% by decision — see A.7; keeps total non-deployed near ~25%, not ~40%. |
 | `MAX_HOLDINGS` | 20 stocks (ETF excl.) | [LOCKED] | Breadth you can actually track. |
+| `COST_WARN_RATIO` | **0.5 % of order value** | [DEFAULT] | Roughly a $450 LSE / $85 US order — below that the fee floor starts to bite. |
+| `COST_BLOCK_RATIO` | **0 (off)** | [DEFAULT] | Blocking a sub-break-even buy starves the leg; nothing banks the skipped dollars. |
+| `MIN_ORDER_DOLLARS` | **0 (off); broker-specific** | [DEFAULT] | Depends on your broker's fee minimums AND your contribution size — must be checked against `3 × BASE_UNIT × tier_weight` per tier. |
+| `MIN_ORDER_ROUNDUP_MAX` | **1.25×** | [DEFAULT] | Lifts a near-miss order to the floor without letting it silently become a different position size. |
+| `CORE_ROTATE` | **on** | [DEFAULT] | One core order per run rotating between lines; N lines would otherwise pay the fee minimum N× to move the same money. |
+| `COMMISSION_PLAN` | **tiered** | [DEFAULT] | Which IBKR plan the account is on; individual fills may override it. |
+| `FIXED_LSE_MIN` | **0 = not configured** | [DEFAULT] | IBKR's LSE fixed-plan minimum was **not verified** — costing a fixed-plan LSE order fails loudly until you set it from a statement. |
+| IBKR fee figures | see Rule 8 | [LOCKED] | Broker's published Tiered schedule — facts, not preferences. |
 
 ### A.2 `BASE_UNIT` and tier weights — the sizing spine
 

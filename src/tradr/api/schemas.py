@@ -47,6 +47,16 @@ class TradeIn(BaseModel):
     qty: float = Field(gt=0)
     price: float = Field(gt=0)
     trade_date: date | None = None
+    # Brokerage (Rule 8). `fee` wins if given — for an old fill, the number off your
+    # statement beats any model. Otherwise the plan picks a schedule to estimate with:
+    # "tiered" | "fixed" | "none" (untracked); omitted = the account's commission_plan.
+    fee: float | None = Field(default=None, ge=0)
+    commission_plan: str | None = None
+    # Only meaningful for hand-entered fills with no signal behind them: a manual buy you
+    # funded from dry powder yourself (a dip-buy you placed without going through Approve),
+    # or a manual sell whose proceeds should recycle back into it — mirrors what
+    # confirm_signal does for double_down/watch_opportunity and trim (Rule 3/8).
+    fund_from_reserve: bool = False
 
 
 class ReserveIn(BaseModel):

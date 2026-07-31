@@ -42,6 +42,7 @@ class MarketData:
     ret_30d: float            # trailing 30-day return, computed by the ADAPTER (not engine)
     ret_60d: float = 0.0      # trailing 60-day gain — trim velocity gate (Rule 2)
     fwd_pe: float | None = None
+    vol_20d: float = 0.0      # stddev of trailing 20d daily returns — this ticker's "normal" (opportunity scoring)
 
 
 @dataclass(frozen=True)

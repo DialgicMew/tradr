@@ -5,7 +5,11 @@ import { usd, usd2 } from "../fmt.js";
 export default function Trades() {
   const [trades, setTrades] = useState([]);
   const [reserve, setReserve] = useState({ balance: 0, entries: [] });
-  const [form, setForm] = useState({ ticker: "", side: "buy", mode: "shares", qty: "", amount: "", price: "", trade_date: "" });
+  // brokerage: "tiered" | "fixed" | "actual" | "none" — how this fill's fee is decided.
+  // "actual" is the honest choice for an old trade: type the number off the statement.
+  const [form, setForm] = useState({ ticker: "", side: "buy", mode: "shares", qty: "", amount: "",
+                                     price: "", trade_date: "", brokerage: "tiered", fee: "",
+                                     fundFromReserve: false });
   const [res, setRes] = useState({ amount: "", note: "" });
   const [err, setErr] = useState("");
 
@@ -27,8 +31,13 @@ export default function Trades() {
         ticker: form.ticker, side: form.side,
         qty: computedQty, price,
         trade_date: form.trade_date || null,
+        // An explicit fee wins server-side; otherwise the plan is estimated from.
+        ...(form.brokerage === "actual"
+          ? { fee: parseFloat(form.fee) || 0 }
+          : { commission_plan: form.brokerage }),
+        fund_from_reserve: form.fundFromReserve,
       });
-      setForm({ ...form, ticker: "", qty: "", amount: "", price: "" });
+      setForm({ ...form, ticker: "", qty: "", amount: "", price: "", fee: "", fundFromReserve: false });
       load();
     } catch (e) { setErr(String(e)); }
   };
@@ -63,13 +72,44 @@ export default function Trades() {
           )}
           <input placeholder="Price / share" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} style={{ width: 110 }} />
           <input type="date" value={form.trade_date} onChange={(e) => setForm({ ...form, trade_date: e.target.value })} />
+          <select value={form.brokerage} title="Which IBKR plan this fill was traded under"
+            onChange={(e) => setForm({ ...form, brokerage: e.target.value })}>
+            <option value="tiered">Tiered (est.)</option>
+            <option value="fixed">Fixed (est.)</option>
+            <option value="actual">Actual fee…</option>
+            <option value="none">No fee</option>
+          </select>
+          {form.brokerage === "actual" && (
+            <input placeholder="Fee $" value={form.fee}
+              onChange={(e) => setForm({ ...form, fee: e.target.value })} style={{ width: 90 }} />
+          )}
           <button onClick={addTrade} disabled={!form.ticker || !qtyValid}>Add</button>
         </div>
+        <label className="row" style={{ marginTop: 10, gap: 6, alignItems: "center", fontSize: 13 }}
+          title="Only for a fill you placed yourself outside the Alerts approve flow — a dip-buy
+funded from dry powder, or a sale whose proceeds should recycle back into it. This also
+settles the alert it stands in for (marks its band FIRED, retires the stale
+recommendation) so it won't keep nagging you — it re-arms later the same way a confirmed
+one would. Leave unchecked for a regular contribution; nothing here is touched.">
+          <input type="checkbox" checked={form.fundFromReserve}
+            onChange={(e) => setForm({ ...form, fundFromReserve: e.target.checked })} />
+          <span className="muted">
+            {form.side === "buy" ? "Fund this buy from reserve (dry powder)" : "Recycle proceeds into reserve"}
+          </span>
+        </label>
         {qtyValid && (
           <div className="muted" style={{ marginTop: 8 }}>
             {form.mode === "amount"
               ? <>${parseFloat(form.amount).toLocaleString()} ÷ {usd2(price)} ≈ <strong>{computedQty.toFixed(6)} shares</strong></>
               : <><strong>{computedQty} shares</strong> × {usd2(price)} ≈ {usd2(computedQty * price)}</>}
+            {form.side === "buy" && (
+              <> · brokerage {form.brokerage === "actual" ? "as entered" : form.brokerage === "none" ? "not tracked" : `estimated on ${form.brokerage}`}
+                {form.brokerage !== "none" && " and included in your cost basis"}</>
+            )}
+            {form.fundFromReserve && (
+              <> · reserve will {form.side === "buy" ? "decrease" : "increase"} by ~{usd2(computedQty * price)}
+                {form.side === "buy" ? " + fee" : " − fee"}</>
+            )}
           </div>
         )}
         {err && <div className="neg" style={{ marginTop: 8 }}>{err}</div>}
@@ -97,18 +137,19 @@ export default function Trades() {
       <div className="card">
         <table>
           <thead><tr><th>Date</th><th>Ticker</th><th>Side</th><th className="num">Qty</th>
-            <th className="num">Price</th><th></th></tr></thead>
+            <th className="num">Price</th><th className="num">Fee</th><th></th></tr></thead>
           <tbody>
             {trades.map((t) => (
               <tr key={t.id} style={{ opacity: t.voided ? 0.4 : 1 }}>
                 <td>{t.trade_date}</td><td><strong>{t.ticker}</strong></td>
                 <td className={t.side === "buy" ? "pos" : "neg"}>{t.side}</td>
                 <td className="num">{t.qty}</td><td className="num">{usd2(t.price)}</td>
+                <td className="num muted">{t.fee ? usd2(t.fee) : "—"}</td>
                 <td className="num">{t.voided ? <span className="muted">voided</span> :
                   <button className="ghost" onClick={() => api.voidTrade(t.id).then(load)}>Remove</button>}</td>
               </tr>
             ))}
-            {trades.length === 0 && <tr><td colSpan={6} className="muted">No trades yet.</td></tr>}
+            {trades.length === 0 && <tr><td colSpan={7} className="muted">No trades yet.</td></tr>}
           </tbody>
         </table>
       </div>

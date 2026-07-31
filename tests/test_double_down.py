@@ -34,6 +34,20 @@ def test_never_exceeds_3x_even_in_deep_crash():
     assert sig[0].size_dollars == 3.0 * 2000  # -60% dd, still clamped to 3×
 
 
+def test_at_cap_produces_no_signal_not_a_zero_dollar_one():
+    # Already fully deployed (3x) and a deeper band crosses -> nothing left to add.
+    # Must not surface a "Buy $0 — Approve" card; just a silent diagnostic.
+    bs = {"AAA": BandState("AAA",
+                           dd_status={-0.20: BandStatus.FIRED, -0.30: BandStatus.FIRED,
+                                      -0.40: BandStatus.FIRED},
+                           dd_deployed_mult=3.0)}
+    snap = make_snapshot([pos("AAA", tier="T1")], [md("AAA", price=48, high_52w=100)],
+                         band_state=bs)
+    result = evaluate(snap)
+    assert _dd_signals(result) == []
+    assert any("cap already" in d for d in result.diagnostics)
+
+
 def test_already_deployed_reduces_new_suggestion():
     bs = {"AAA": BandState("AAA", dd_status={-0.20: BandStatus.FIRED}, dd_deployed_mult=2.0)}
     # price 65 -> deepest -30 target 3×, minus 2× already deployed -> only 1× new.

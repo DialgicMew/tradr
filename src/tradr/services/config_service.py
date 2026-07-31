@@ -23,6 +23,8 @@ DEFAULT_PARAMS: dict[str, tuple[object, str]] = {
     "arm_etf": (-0.05, "LOCKED"),
     "dd_cap_mult": (3.0, "LOCKED"),
     "dd_first_band_mult": (2.0, "DEFAULT"),
+    "watch_opportunity_min_score": (8.0, "DEFAULT"),
+    "watch_starter_mult": (1.0, "DEFAULT"),
     "trim_bands": ([1.20, 1.70, 2.20], "DEFAULT"),
     "trim_pct": (0.20, "DEFAULT"),
     "trim_arm_buffer": (0.20, "DEFAULT"),
@@ -36,6 +38,29 @@ DEFAULT_PARAMS: dict[str, tuple[object, str]] = {
     "cash_ceiling": (0.05, "DEFAULT"),
     "auto_bank_5050": (True, "DEFAULT"),
     "max_holdings": (20, "LOCKED"),
+    # Transaction costs (Rule 8) — IBKR Tiered fee schedule, USD, GST 18% on commission.
+    "commissions_on": (True, "DEFAULT"),
+    "gst_rate": (0.18, "LOCKED"),
+    "lse_commission_pct": (0.0005, "LOCKED"),
+    "lse_commission_min": (1.70, "LOCKED"),
+    "lse_exchange_min": (0.14, "LOCKED"),
+    "lse_clearing": (0.08, "LOCKED"),
+    "us_commission_per_share": (0.0035, "LOCKED"),
+    "us_commission_min": (0.35, "LOCKED"),
+    "us_commission_max_pct": (0.01, "LOCKED"),
+    "us_clearing_per_share": (0.00020, "LOCKED"),
+    "commission_plan": ("tiered", "DEFAULT"),
+    "fixed_us_per_share": (0.005, "LOCKED"),
+    "fixed_us_min": (1.00, "LOCKED"),
+    "fixed_us_max_pct": (0.01, "LOCKED"),
+    "fixed_lse_pct": (0.0005, "DEFAULT"),
+    "fixed_lse_min": (0.0, "DEFAULT"),   # 0 = unverified; set it from your statement
+    # Off by default — a per-order floor depends on your broker AND your contribution size.
+    "min_order_dollars": (0.0, "DEFAULT"),
+    "min_order_roundup_max": (1.25, "DEFAULT"),
+    "cost_warn_ratio": (0.005, "DEFAULT"),
+    "cost_block_ratio": (0.0, "DEFAULT"),
+    "core_rotate": (True, "DEFAULT"),
 }
 
 DEFAULT_FLAGS = {"emergency_fund_ok": False, "idle_cash": 0.0}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { describe } from "../describe.js";
+import { costLine, describe } from "../describe.js";
 import { usd, usd2 } from "../fmt.js";
 import RunButton from "../components/RunButton.jsx";
 
@@ -27,11 +27,17 @@ function ApproveModal({ sig, onClose, onDone }) {
   };
 
   const d = describe(sig);
+  const cost = costLine(sig);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3 style={{ marginTop: 0 }}>{d.headline}</h3>
-        <div className="muted" style={{ marginBottom: 14 }}>{d.why}</div>
+        <div className="muted" style={{ marginBottom: cost ? 4 : 14 }}>{d.why}</div>
+        {cost && (
+          <div className="rec-cost muted" style={{ marginBottom: 14 }} title={cost.detail}>
+            {cost.text}
+          </div>
+        )}
 
         {step === "ask" ? (
           <>
@@ -79,14 +85,25 @@ function ApproveModal({ sig, onClose, onDone }) {
 const RULE_LABEL = {
   double_down: "Buy the dip", trim: "Take profit", base_dca: "Monthly plan",
   core_build: "Build index core", cash_floor: "Idle cash", replace: "At holdings cap",
+  watch_opportunity: "New position opportunity",
 };
 
-// Index/core actions surface first, then trims, then dip-buys, then the rest.
-const RULE_ORDER = { core_build: 0, cash_floor: 1, base_dca: 2, trim: 3, double_down: 4, replace: 5 };
-const byPriority = (a, b) => (RULE_ORDER[a.rule] ?? 9) - (RULE_ORDER[b.rule] ?? 9);
+// "Opportunistic" ranking: how unusual the move is for THIS ticker (opportunity_score,
+// set by the engine as move-size ÷ the ticker's own trailing volatility), decayed by age
+// so a big alert from days ago eventually gives way to a smaller, fresher one.
+const FRESHNESS_HALF_LIFE_HOURS = 36;
+
+function opportunityRank(sig) {
+  const score = sig.metrics?.opportunity_score ?? 0;
+  const ageHours = sig.created_at ? (Date.now() - new Date(sig.created_at).getTime()) / 36e5 : 0;
+  const freshness = Math.pow(0.5, Math.max(0, ageHours) / FRESHNESS_HALF_LIFE_HOURS);
+  return score * freshness;
+}
+const byOpportunity = (a, b) => opportunityRank(b) - opportunityRank(a);
 
 function Rec({ sig, onApprove, onDecline }) {
   const d = describe(sig);
+  const cost = costLine(sig);
   return (
     <div className={`card signal ${sig.action}`} style={{ marginBottom: 12 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -95,6 +112,7 @@ function Rec({ sig, onApprove, onDecline }) {
       </div>
       {d.sub && <div className="rec-sub">{d.sub}</div>}
       <div className="rec-why"><span className="why-label">Why</span>{d.why}</div>
+      {cost && <div className="rec-cost muted" title={cost.detail}>{cost.text}</div>}
       {sig.warnings?.map((w, i) => <div key={i} className="warn">⚠️ {w}</div>)}
       <div className="row" style={{ marginTop: 14 }}>
         <button onClick={() => onApprove(sig)}>Approve</button>
@@ -104,15 +122,35 @@ function Rec({ sig, onApprove, onDecline }) {
   );
 }
 
+function RecGroup({ title, subtitle, sigs, onApprove, onDecline }) {
+  if (sigs.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <h2 style={{ marginBottom: 2 }}>{title}</h2>
+      {subtitle && <p className="muted" style={{ marginTop: 0 }}>{subtitle}</p>}
+      {[...sigs].sort(byOpportunity).map((s) => (
+        <Rec key={s.id} sig={s} onApprove={onApprove} onDecline={onDecline} />
+      ))}
+    </div>
+  );
+}
+
 export default function Alerts() {
   const [signals, setSignals] = useState([]);
+  const [heldTickers, setHeldTickers] = useState(new Set());
   const [active, setActive] = useState(null);
 
-  const load = () => api.signals("PENDING").then(setSignals);
+  const load = () => {
+    api.signals("PENDING").then(setSignals);
+    api.holdings().then((hs) => setHeldTickers(new Set(hs.filter((h) => h.shares > 0).map((h) => h.ticker))));
+  };
   useEffect(() => { load(); }, []);
 
   const decline = async (sig) => { await api.skipSignal(sig.id); load(); };
   const done = () => { setActive(null); load(); };
+
+  const held = signals.filter((s) => heldTickers.has(s.ticker));
+  const watchlist = signals.filter((s) => !heldTickers.has(s.ticker));
 
   return (
     <>
@@ -127,7 +165,12 @@ export default function Alerts() {
       {signals.length === 0 ? (
         <div className="card muted">No recommendations right now. Run the engine, or check back after market hours.</div>
       ) : (
-        [...signals].sort(byPriority).map((s) => <Rec key={s.id} sig={s} onApprove={setActive} onDecline={decline} />)
+        <>
+          <RecGroup title="Holdings" subtitle="Stocks you currently own"
+                    sigs={held} onApprove={setActive} onDecline={decline} />
+          <RecGroup title="Watchlist" subtitle="Stocks you don't own yet"
+                    sigs={watchlist} onApprove={setActive} onDecline={decline} />
+        </>
       )}
 
       {active && <ApproveModal sig={active} onClose={() => setActive(null)} onDone={done} />}

@@ -22,6 +22,18 @@ class MarketDataProvider(Protocol):
     def get_stock(self, ticker: str) -> MarketData | None: ...
 
 
+def _trailing_vol(closes: list[float], window: int = 20) -> float:
+    """Stddev of daily returns over the trailing `window` days — this ticker's own
+    'normal' volatility, so a move can be judged relative to itself (opportunity scoring)."""
+    tail = closes[-(window + 1):]
+    if len(tail) < 2:
+        return 0.0
+    rets = [tail[i] / tail[i - 1] - 1 for i in range(1, len(tail))]
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / len(rets)
+    return var ** 0.5
+
+
 class NoneProvider:
     """Offline provider — used in tests and before a provider is configured."""
 
@@ -59,8 +71,9 @@ class YahooProvider:
         high_52w = float(meta.get("fiftyTwoWeekHigh") or max(closes))
         ret_30d = price / closes[-31] - 1 if len(closes) > 31 else 0.0
         ret_60d = price / closes[-61] - 1 if len(closes) > 61 else 0.0
+        vol_20d = _trailing_vol(closes)
         return MarketData(ticker=ticker.upper(), price=price, high_52w=high_52w,
-                          ret_30d=ret_30d, ret_60d=ret_60d, fwd_pe=None)
+                          ret_30d=ret_30d, ret_60d=ret_60d, fwd_pe=None, vol_20d=vol_20d)
 
 
 class StooqProvider:
@@ -84,8 +97,9 @@ class StooqProvider:
         high_52w = max(window)
         ret_30d = price / closes[-31] - 1 if len(closes) > 31 else 0.0
         ret_60d = price / closes[-61] - 1 if len(closes) > 61 else 0.0
+        vol_20d = _trailing_vol(closes)
         return MarketData(ticker=ticker.upper(), price=price, high_52w=high_52w,
-                          ret_30d=ret_30d, ret_60d=ret_60d, fwd_pe=None)
+                          ret_30d=ret_30d, ret_60d=ret_60d, fwd_pe=None, vol_20d=vol_20d)
 
     def _daily_closes(self, ticker: str) -> list[float]:
         sym = ticker.lower()

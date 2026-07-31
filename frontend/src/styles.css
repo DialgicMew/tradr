@@ -78,6 +78,9 @@ h1 { font-size: 22px; } h2 { font-size: 16px; color: var(--muted); margin: 24px 
 .rec-headline { font-size: 17px; font-weight: 700; line-height: 1.35; }
 .rec-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
 .rec-why { margin-top: 10px; font-size: 13.5px; line-height: 1.55; color: #c5ccd8; }
+/* Broker-fee footnote (Rule 8). Deliberately quiet — the engine raises a real warning
+   when the drag is bad enough to act on. */
+.rec-cost { margin-top: 8px; font-size: 12.5px; }
 .why-label { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
   text-transform: uppercase; color: var(--accent); background: rgba(79,140,255,0.12);
   border-radius: 5px; padding: 1px 6px; margin-right: 7px; vertical-align: middle; }

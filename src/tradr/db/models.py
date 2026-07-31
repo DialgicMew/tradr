@@ -32,6 +32,9 @@ class Lot(Base):
     side: Mapped[str] = mapped_column(String)   # buy | sell
     qty: Mapped[float] = mapped_column(Float)
     price: Mapped[float] = mapped_column(Float)
+    # Estimated IBKR cost of this fill (Rule 8). Estimated, not from the broker statement —
+    # it is what makes "fees paid YTD" answerable without importing statements.
+    fee: Mapped[float] = mapped_column(Float, default=0.0)
     source_signal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     voided: Mapped[bool] = mapped_column(default=False)  # "remove" = compensating flag
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -43,9 +46,13 @@ class ReserveEntry(Base):
     __tablename__ = "reserve_entries"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    kind: Mapped[str] = mapped_column(String)   # external | base_bank | trim_recycle | dd_draw | manual
+    # external | base_bank | trim_recycle | dd_draw | fee | manual
+    kind: Mapped[str] = mapped_column(String)
     amount: Mapped[float] = mapped_column(Float)  # signed: + funds, − draws
     note: Mapped[str] = mapped_column(String, default="")
+    # The fill this movement was caused by, so voiding that fill can reverse it. NULL for
+    # movements with no fill behind them (external top-ups, manual adjustments).
+    source_lot_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
 
 class SignalRow(Base):

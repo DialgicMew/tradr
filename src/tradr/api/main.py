@@ -22,6 +22,7 @@ from tradr.db.models import (
     SignalRow,
     UniverseRow,
 )
+from tradr.engine import costs as engine_costs
 from tradr.runner import run_once
 from tradr.services import config_service as cfg
 from tradr.services import ledger as ledger_svc
@@ -157,7 +158,7 @@ def list_trades(s: Session = Depends(get_db)) -> list[dict]:
     lots = s.scalars(select(Lot).order_by(Lot.trade_date.desc(), Lot.id.desc())).all()
     return [
         {"id": l.id, "ticker": l.ticker, "side": l.side, "qty": l.qty, "price": l.price,
-         "trade_date": l.trade_date.isoformat(), "voided": l.voided,
+         "fee": l.fee or 0.0, "trade_date": l.trade_date.isoformat(), "voided": l.voided,
          "source_signal_id": l.source_signal_id}
         for l in lots
     ]
@@ -165,19 +166,51 @@ def list_trades(s: Session = Depends(get_db)) -> list[dict]:
 
 @app.post("/api/trades")
 def add_trade(body: sc.TradeIn, s: Session = Depends(get_db)) -> dict:
-    lot = ledger_svc.record_trade(
+    fee = _resolve_manual_fee(s, body)
+    # sig_svc.record_manual_trade wraps the ledger call and — only when fund_from_reserve
+    # is set — also settles the band(s)/cap this fill stands in for, so it stops
+    # generating alerts for a condition already acted on outside the Approve flow.
+    out = sig_svc.record_manual_trade(
         s, ticker=body.ticker, side=body.side, qty=body.qty, price=body.price,
-        trade_date=body.trade_date or date.today())
-    return {"id": lot.id}
+        trade_date=body.trade_date or date.today(), fee=fee,
+        fund_from_reserve=body.fund_from_reserve)
+    return {"id": out["lot_id"], **out}
+
+
+def _resolve_manual_fee(s: Session, body: sc.TradeIn) -> float:
+    """Brokerage for a hand-entered fill (Rule 8).
+
+    An explicit `fee` always wins — for an old trade the statement is ground truth. Failing
+    that, estimate under the named plan so historic fills can be costed as they actually
+    were, on Fixed or Tiered, regardless of which plan the account is on now.
+    """
+    if body.fee is not None:
+        return body.fee
+    plan = (body.commission_plan or "").lower()
+    if plan == "none":
+        return 0.0
+    try:
+        params = cfg.build_params(s)
+    except RuntimeError:
+        return 0.0  # not configured yet — record the trade, leave the fee untracked
+    if not params.commissions_on:
+        return 0.0
+    try:
+        return engine_costs.estimate_for_ticker(
+            body.ticker, trade_value=body.qty * body.price, shares=body.qty,
+            p=params, plan=plan or None).total
+    except engine_costs.UnconfiguredSchedule as e:
+        raise HTTPException(400, str(e)) from e
 
 
 @app.post("/api/trades/{lot_id}/void")
 def void_trade(lot_id: int, s: Session = Depends(get_db)) -> dict:
+    # Not ledger.void_lot directly — voiding must also reverse the reserve movements, the
+    # 3x-cap counter and the latched band that confirming this fill caused.
     try:
-        ledger_svc.void_lot(s, lot_id)
+        return sig_svc.void_trade(s, lot_id)
     except KeyError as e:
         raise HTTPException(404, str(e))
-    return {"voided": lot_id}
 
 
 @app.get("/api/reserve")
@@ -239,6 +272,9 @@ def portfolio_summary(s: Session = Depends(get_db)) -> dict:
         "reserve_balance": reserve,
         "core_weight": (etf_val / invested) if invested else None,
         "holdings_count": sum(1 for p in positions if p.asset_class != "ETF"),
+        # Transaction-cost feedback loop (Rule 8) — what the trading itself has cost.
+        "fees_ytd": ledger_svc.fees_paid(s, since=date(date.today().year, 1, 1)),
+        "fees_all_time": ledger_svc.fees_paid(s),
         "allocation": [
             {"ticker": p.ticker, "value": prices.get(p.ticker, 0.0) * p.shares, "tier": p.tier}
             for p in positions
