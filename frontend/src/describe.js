@@ -35,31 +35,43 @@ export function describe(sig) {
   const priceStr = price ? usd2(price) : "the current price";
   const approxShares = price && sig.size_dollars ? sig.size_dollars / price : sig.size_shares;
 
-  if (sig.rule === "double_down") {
-    return {
-      headline: `Buy ${usd(sig.size_dollars)} of ${tickerLabel(sig.ticker)} at ~${priceStr}`,
-      sub: price ? `≈ ${shares(approxShares)} shares` : null,
-      why:
-        `${sig.ticker} has dropped ${pctAbs(m.dd ?? 0)} below its 52-week high` +
-        (m.high_52w ? ` of ${usd2(m.high_52w)}` : "") +
-        `. That's past your "buy the dip" level${(m.bands?.length ?? 1) > 1 ? "s" : ""}, ` +
-        `so your rule adds to the position while it's cheaper. (Dip-buys ignore valuation on purpose.)`,
-      tone: "buy",
-    };
-  }
+  if (sig.rule === "buy") {
+    const trigger = m.trigger ?? "dip";
+    const isStarter = m.new_position === true;
 
-  if (sig.rule === "watch_opportunity") {
+    if (trigger === "cadence") {
+      return {
+        headline: `Buy ${usd(m.deploy ?? sig.size_dollars)} of ${tickerLabel(sig.ticker)} at ~${priceStr}`,
+        sub: `Rolling contribution${m.bank ? ` · plus ${usd(m.bank)} to reserve` : ""}` +
+          (price && approxShares ? ` · ≈ ${shares(approxShares)} shares` : ""),
+        why:
+          `It's been a while since your last ${sig.ticker} buy, and there's no dip to chase right ` +
+          `now — so your rolling plan buys anyway rather than waiting indefinitely for one` +
+          (m.brake ? " (halved — it's already spiked recently, so you're not chasing it)" : "") +
+          (m.froth ? " (halved — the market looks expensive right now)" : "") + ".",
+        tone: "buy",
+      };
+    }
+
+    // trigger === "dip" (optionally "dip+cadence" folded in) — either an existing
+    // position averaging down, or a watchlist name opening a new starter position.
     return {
       headline: `Buy ${usd(sig.size_dollars)} of ${tickerLabel(sig.ticker)} at ~${priceStr}`,
-      sub: price ? `≈ ${shares(approxShares)} shares (new starter position)` : null,
+      sub: price ? `≈ ${shares(approxShares)} shares${isStarter ? " (new starter position)" : ""}` : null,
       why:
         `${sig.ticker} has dropped ${pctAbs(m.dd ?? 0)} below its 52-week high` +
         (m.high_52w ? ` of ${usd2(m.high_52w)}` : "") +
-        (m.opportunity_score != null
-          ? `. That's an unusually large move for this stock (opportunity score ${m.opportunity_score.toFixed(1)})`
-          : "") +
-        `. You don't own this yet — your rule flags it as a starter-sized opening position, ` +
-        `not an averaging-down buy.`,
+        (isStarter
+          ? (m.opportunity_score != null
+              ? `. That's an unusually large move for this stock (opportunity score ${m.opportunity_score.toFixed(1)})`
+              : "") +
+            `. You don't own this yet — your rule flags it as a starter-sized opening position, ` +
+            `not an averaging-down buy.`
+          : `. That's past your "buy the dip" level${(m.bands?.length ?? 1) > 1 ? "s" : ""}, ` +
+            `so your rule adds to the position while it's cheaper. (Dip-buys ignore valuation on purpose.)`) +
+        (sig.metrics?.trigger === "dip+cadence"
+          ? ` It's also been a while since your last buy here — this covers both.`
+          : ""),
       tone: "buy",
     };
   }
@@ -78,20 +90,6 @@ export function describe(sig) {
         `. Your rule harvests fast gains like this — selling ${pctAbs(m.trim_pct ?? 0.2)} of the ` +
         `position and letting the rest keep running.`,
       tone: "sell",
-    };
-  }
-
-  if (sig.rule === "base_dca") {
-    return {
-      headline: `Buy ${usd(m.deploy ?? sig.size_dollars)} of ${tickerLabel(sig.ticker)} at ~${priceStr}`,
-      sub: `Monthly plan${m.bank ? ` · plus ${usd(m.bank)} to reserve` : ""}` +
-        (price && approxShares ? ` · ≈ ${shares(approxShares)} shares` : ""),
-      why:
-        `It's your monthly contribution day. ${sig.ticker} gets its planned buy` +
-        (m.steered ? ", boosted to steer your ETF core back toward 40–50%" : "") +
-        (m.brake ? " (halved — it's already spiked recently, so you're not chasing it)" : "") +
-        (m.froth ? " (halved — the market looks expensive right now)" : "") + ".",
-      tone: "buy",
     };
   }
 

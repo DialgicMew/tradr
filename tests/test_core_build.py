@@ -13,12 +13,12 @@ def _core(result):
 
 
 def _snap_with_watchlist(positions, market, watchlist, **kw):
-    snap = make_snapshot(positions, market, is_dca_day=False, **kw)
+    snap = make_snapshot(positions, market, **kw)
     object.__setattr__(snap, "watchlist", watchlist)
     return snap
 
 
-def test_core_build_fires_from_zero_shares_off_dca_day():
+def test_core_build_fires_from_zero_shares():
     # Hold one stock, zero index. Core = 0% < 40% → should nudge to buy the index.
     stock = pos("AAA", tier="T2", shares=10, avg_basis=100)
     watch = Position(ticker="CSPX.L", tier="ETF", shares=0.0, avg_basis=0.0, asset_class="ETF")
@@ -122,7 +122,7 @@ def test_core_build_silent_when_core_on_target():
 def test_core_build_folds_in_opportunistic_reason_instead_of_a_second_signal():
     # CSPX.L is both below the 40% core target AND deeply off its 52wk high with a
     # high opportunity score -> ONE core_build signal carrying both reasons, not a
-    # separate watch_opportunity signal competing for the same ticker.
+    # separate watchlist starter "buy" signal competing for the same ticker.
     stock = pos("AAA", tier="T2", shares=10, avg_basis=100)
     watch = Position(ticker="CSPX.L", tier="ETF", shares=0.0, avg_basis=0.0, asset_class="ETF")
     snap = _snap_with_watchlist(
@@ -133,7 +133,7 @@ def test_core_build_folds_in_opportunistic_reason_instead_of_a_second_signal():
     assert len(sig) == 1
     assert sig[0].metrics["opportunistic"] is True
     assert "opportunity score" in sig[0].cause
-    assert not any(s.rule == "watch_opportunity" for s in result.signals)
+    assert not any(s.rule == "buy" for s in result.signals)
 
 
 def test_core_build_no_bonus_reason_when_not_a_notable_dip():

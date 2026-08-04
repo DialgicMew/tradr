@@ -3,6 +3,10 @@
 Reuses Rule 1's band ladder + hysteresis, gated by opportunity_score (move size ÷
 this ticker's own trailing volatility) so only unusually large drops for THAT name
 open a new starter position. Sized as a flat tranche, not the averaging-down ladder.
+
+Consolidated with the held-name dip-buy and rolling-cadence buy into one "buy" rule
+(ruleset §4/§7) — a watchlist starter is distinguished by `metrics["trigger"] == "dip"`
+and the ticker not being a held position, not by its own rule name.
 """
 
 from __future__ import annotations
@@ -12,7 +16,9 @@ from tests.conftest import make_snapshot, md, pos
 
 
 def _watch(result):
-    return [s for s in result.signals if s.rule == "watch_opportunity" and s.action == "BUY"]
+    return [s for s in result.signals if s.rule == "buy" and s.action == "BUY"
+            and s.metrics.get("trigger") == "dip" and s.metrics.get("funded_from") == "reserve"
+            and "opportunity score" in s.cause]
 
 
 def test_fires_starter_buy_above_score_threshold():
@@ -49,11 +55,11 @@ def test_expires_when_price_recovers_before_confirmation():
                          watchlist=watchlist, band_state=bs)
     result = evaluate(snap)
     assert result.band_state["AAA"].dd_status[-0.20] is BandStatus.ARMED
-    assert any("withdrawn" in s.cause for s in result.signals if s.rule == "watch_opportunity")
+    assert any("withdrawn" in s.cause for s in result.signals if s.rule == "buy")
 
 
 def test_core_tier_etf_excluded_rule3_already_owns_it():
-    # ETF/ETFC core tiers are steered by Rule 3 (core-build target); watch_opportunity
+    # ETF/ETFC core tiers are steered by Rule 3 (core-build target); a watchlist starter
     # must not also fire for them, or the same ticker gets two competing buy alerts.
     watchlist = [pos("CSPX.L", tier="ETF", shares=0.0, avg_basis=0.0, asset_class="ETF")]
     snap = make_snapshot([], [md("CSPX.L", price=90, high_52w=100, vol_20d=0.005)],
@@ -61,7 +67,7 @@ def test_core_tier_etf_excluded_rule3_already_owns_it():
     assert _watch(evaluate(snap)) == []
 
 
-def test_shares_shared_reserve_with_double_down_deepest_first():
+def test_shares_shared_reserve_with_held_dip_buy_deepest_first():
     # BBB (held, -35% -> wants 3x base = 6000) is deeper than AAA (watchlist, -25% ->
     # wants 1x base = 2000) -> BBB, being deeper, exhausts the reserve first.
     held = [pos("BBB", tier="T1", shares=100, avg_basis=50)]
@@ -71,7 +77,7 @@ def test_shares_shared_reserve_with_double_down_deepest_first():
                           md("BBB", price=65, high_52w=100, vol_20d=0.02)],
                          watchlist=watchlist, reserve=6000.0)
     result = evaluate(snap)
-    by_rule = {s.rule: s for s in result.signals if s.action == "BUY"}
-    assert by_rule["double_down"].size_dollars == 6000
-    assert not by_rule["double_down"].warnings          # funded first (deeper dd)
-    assert any("reserve short" in w for w in by_rule["watch_opportunity"].warnings)
+    by_ticker = {s.ticker: s for s in result.signals if s.action == "BUY"}
+    assert by_ticker["BBB"].size_dollars == 6000
+    assert not by_ticker["BBB"].warnings          # funded first (deeper dd)
+    assert any("reserve short" in w for w in by_ticker["AAA"].warnings)

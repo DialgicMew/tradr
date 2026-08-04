@@ -7,7 +7,8 @@ from tradr.engine import BandState, BandStatus, evaluate
 
 
 def _dd_signals(result):
-    return [s for s in result.signals if s.rule == "double_down" and s.action == "BUY"]
+    return [s for s in result.signals if s.rule == "buy" and s.action == "BUY"
+            and s.metrics.get("funded_from") == "reserve"]
 
 
 def test_first_band_fires_at_2x_base():

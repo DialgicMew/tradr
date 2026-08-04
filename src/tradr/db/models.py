@@ -115,13 +115,14 @@ class MacroRow(Base):
 
 
 class MarketSnapshotRow(Base):
-    """Cache/audit of fetched market data per run (adapter output)."""
+    """Latest fetched market data per ticker — one row per ticker, upserted each engine run."""
 
     __tablename__ = "market_snapshot"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ticker: Mapped[str] = mapped_column(String, index=True)
     as_of: Mapped[date] = mapped_column(Date)
     price: Mapped[float] = mapped_column(Float)
+    prev_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     high_52w: Mapped[float] = mapped_column(Float)
     ret_30d: Mapped[float] = mapped_column(Float)
     ret_60d: Mapped[float] = mapped_column(Float)

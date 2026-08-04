@@ -17,9 +17,6 @@ class Settings(BaseSettings):
     api_port: int = 8000
     log_level: str = "INFO"
 
-    # DCA schedule: monthly on this day-of-month (Rule 7 fixed date).
-    dca_day_of_month: int = 1
-
 
 def get_settings() -> Settings:
     return Settings()

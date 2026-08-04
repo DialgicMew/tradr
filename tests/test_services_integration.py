@@ -34,9 +34,9 @@ def test_double_down_signal_then_confirm_roundtrip(db):
 
     provider = StubProvider({"AAA": MarketData("AAA", price=80, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
 
-    dd = [r for r in new if r.rule == "double_down"]
+    dd = [r for r in new if r.rule == "buy"]
     assert len(dd) == 1
     assert dd[0].size_dollars == 4000        # first band 2× base (base_i = 1000*2)
     assert dd[0].band == -0.20
@@ -69,8 +69,8 @@ def test_rerun_replaces_stale_pending(db):
                                                  ret_30d=0.0, ret_60d=0.0)})
     provider_b = StubProvider({"AAA": MarketData("AAA", price=65, high_52w=100,
                                                  ret_30d=0.0, ret_60d=0.0)})
-    first = sig_svc.run_and_persist(db, provider_a, as_of=date(2026, 2, 2), is_dca_day=False)
-    second = sig_svc.run_and_persist(db, provider_b, as_of=date(2026, 2, 3), is_dca_day=False)
+    first = sig_svc.run_and_persist(db, provider_a, as_of=date(2026, 2, 2))
+    second = sig_svc.run_and_persist(db, provider_b, as_of=date(2026, 2, 3))
     assert len(first) == 1
     assert len(second) == 1                        # re-derived fresh, not skipped as a dupe
     assert first[0].metrics["price"] == 80          # first run's alert carried day-1 price
@@ -96,12 +96,12 @@ def test_trim_and_double_down_never_coexist_across_runs(db):
 
     day1 = StubProvider({"SNDK": MarketData("SNDK", price=1436.56, high_52w=1450,
                                             ret_30d=0.0, ret_60d=0.43)})
-    first = sig_svc.run_and_persist(db, day1, as_of=date(2026, 2, 2), is_dca_day=False)
+    first = sig_svc.run_and_persist(db, day1, as_of=date(2026, 2, 2))
     assert [r.rule for r in first] == ["trim"]
 
     day2 = StubProvider({"SNDK": MarketData("SNDK", price=1258.39, high_52w=2354.39,
                                             ret_30d=0.0, ret_60d=0.43)})
-    second = sig_svc.run_and_persist(db, day2, as_of=date(2026, 2, 3), is_dca_day=False)
+    second = sig_svc.run_and_persist(db, day2, as_of=date(2026, 2, 3))
 
     from tradr.db.models import SignalRow
     pending = db.query(SignalRow).filter_by(state="PENDING").all()
@@ -119,8 +119,8 @@ def test_watch_opportunity_confirm_opens_position_and_draws_reserve(db):
 
     provider = StubProvider({"AAA": MarketData("AAA", price=65, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0, vol_20d=0.02)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
-    watch = [r for r in new if r.rule == "watch_opportunity"]
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
+    watch = [r for r in new if r.rule == "buy"]
     assert len(watch) == 1
     assert watch[0].size_dollars == 2000     # 1x base_for(T1) = 1000*2, flat starter
 
@@ -145,7 +145,7 @@ def test_skip_snoozes_and_rearms_band(db):
     L.add_reserve(db, kind="external", amount=10000)
     provider = StubProvider({"AAA": MarketData("AAA", price=80, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
     sig = sig_svc.skip_signal(db, new[0].id)
     assert sig.state == "SKIPPED" and sig.snooze_until is not None
 
@@ -165,8 +165,8 @@ def test_confirm_records_fee_on_the_lot_and_as_its_own_reserve_line(db):
 
     provider = StubProvider({"AAA": MarketData("AAA", price=80, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
-    dd = next(r for r in new if r.rule == "double_down")
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
+    dd = next(r for r in new if r.rule == "buy")
     sig_svc.confirm_signal(db, dd.id, fill_qty=50, fill_price=80, trade_date=date(2026, 2, 2))
 
     fees = estimate_for_ticker("AAA", trade_value=50 * 80, shares=50, p=cfg.build_params(db)).total
@@ -194,7 +194,7 @@ def test_contribution_funded_buy_pays_its_fee_without_touching_the_reserve(db):
         "AAA": MarketData("AAA", price=100, high_52w=100, ret_30d=0.0, ret_60d=0.0),
         "CSPX.L": MarketData("CSPX.L", price=800, high_52w=800, ret_30d=0.0, ret_60d=0.0),
     })
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
     core = next(r for r in new if r.rule == "core_build")
     budget = core.metrics["budget"]
     fee = core.metrics["cost"]["total"]
@@ -221,8 +221,8 @@ def _confirmed_dip(db, *, price=80.0, qty=50.0, fill=80.0):
     L.add_reserve(db, kind="external", amount=10000)
     provider = StubProvider({"AAA": MarketData("AAA", price=price, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
-    dd = next(r for r in new if r.rule == "double_down")
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
+    dd = next(r for r in new if r.rule == "buy")
     sig_svc.confirm_signal(db, dd.id, fill_qty=qty, fill_price=fill, trade_date=date(2026, 2, 2))
     lot = db.scalars(select(Lot).where(Lot.source_signal_id == dd.id)).one()
     return lot, dd
@@ -320,8 +320,8 @@ def test_manual_buy_fires_all_pending_bands_and_expires_the_stale_alert(db):
     # Price craters -55% off high, crossing all four T1 bands at once.
     provider = StubProvider({"AAA": MarketData("AAA", price=45, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
-    dd = next(r for r in new if r.rule == "double_down")
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
+    dd = next(r for r in new if r.rule == "buy")
 
     from tradr.db.models import EngineStateRow
     before = db.get(EngineStateRow, "AAA").dd_status
@@ -353,7 +353,7 @@ def test_manual_buy_without_fund_flag_does_not_touch_bands(db):
     L.add_reserve(db, kind="external", amount=10000)
     provider = StubProvider({"AAA": MarketData("AAA", price=45, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
 
     from tradr.db.models import EngineStateRow
     before = dict(db.get(EngineStateRow, "AAA").dd_status)
@@ -388,7 +388,7 @@ def test_manual_sell_fires_pending_trim_band_only_not_dd_ladder(db):
     L.add_reserve(db, kind="external", amount=10000)
     provider = StubProvider({"AAA": MarketData("AAA", price=125, high_52w=250,
                                                ret_30d=0.0, ret_60d=0.5)})
-    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
+    new = sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
     trim = next(r for r in new if r.rule == "trim")
 
     out = sig_svc.record_manual_trade(db, ticker="AAA", side="sell", qty=20, price=125,
@@ -413,7 +413,7 @@ def test_manual_buy_fires_armed_not_just_pending_bands(db):
     # Cross all four bands once so a market snapshot with the deep high_52w exists...
     provider = StubProvider({"AAA": MarketData("AAA", price=45, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
+    sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
 
     # ...then reset the ladder back to ARMED by hand, simulating the void-reversal path —
     # no live PENDING alert exists, yet the price hasn't moved at all.
@@ -437,7 +437,7 @@ def test_manual_buy_still_counts_toward_cap_when_every_band_was_already_fired(db
     L.add_reserve(db, kind="external", amount=10000)
     provider = StubProvider({"AAA": MarketData("AAA", price=45, high_52w=100,
                                                ret_30d=0.0, ret_60d=0.0)})
-    sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2), is_dca_day=False)
+    sig_svc.run_and_persist(db, provider, as_of=date(2026, 2, 2))
 
     from tradr.db.models import EngineStateRow
     row = db.get(EngineStateRow, "AAA")

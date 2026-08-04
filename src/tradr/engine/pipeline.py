@@ -8,6 +8,7 @@ confirmation (ruleset §2). Pipeline step order is significant and mirrors §4.
 from __future__ import annotations
 
 import copy
+from datetime import date
 
 from tradr.engine.costs import (
     break_even_value,
@@ -76,20 +77,20 @@ def _dd_cumulative_target(p: Params, deepest_k: int) -> float:
     return min(p.dd_cap_mult, p.dd_first_band_mult + (deepest_k - 1) * step)
 
 
-# Rules whose order, if skipped, is simply GONE — a monthly contribution does not come
-# back, and the user asked to keep seeing unusual dips on small names even when the rule's
-# own size is uneconomic. Everything else re-derives on a later run (a latched band, a
-# widening core gap, cash still sitting idle), so it is safe to hide until it is big enough.
-_SHOW_BELOW_MIN = ("watch_opportunity", "base_dca")
-
-
-def _min_order(p: Params, rule: str, dollars: float) -> tuple[float, bool] | None:
+def _min_order(p: Params, dollars: float, *, show_below_min: bool) -> tuple[float, bool] | None:
     """Apply the per-order floor (Rule 8). Returns (dollars, below_min) or None to defer.
 
     Sized orders below the floor pay IBKR's fee minimum on too little money. An order
     close to the floor is rounded UP to it — one real tranche beats three dribbles — but
     never by more than `min_order_roundup_max`, so the floor cannot quietly turn a $29
     starter into a $100 position and call it the same recommendation.
+
+    `show_below_min=True` keeps an under-floor order visible-but-flagged rather than
+    deferred — used only for a rare dip on a small watchlist name, worth knowing about
+    even when the rule's own size is uneconomic. Every other buy (cadence or dip on a
+    held position) defers and accumulates instead: a fee-dominated order is worse than
+    waiting a run or two, which is exactly what was producing $14 orders losing ~20%+
+    to commissions.
 
     Called at each sizing site rather than as a pass over finished signals, so reserve
     contention and the 3x cap both see the number that will actually be traded.
@@ -98,7 +99,7 @@ def _min_order(p: Params, rule: str, dollars: float) -> tuple[float, bool] | Non
         return dollars, False
     if dollars * p.min_order_roundup_max >= p.min_order_dollars - EPS:
         return p.min_order_dollars, False
-    if rule in _SHOW_BELOW_MIN:
+    if show_below_min:
         return dollars, True
     return None
 
@@ -194,7 +195,7 @@ def evaluate(snap: Snapshot) -> EngineResult:
         for band, st in list(bs.dd_status.items()):
             if st is BandStatus.PENDING and dd > band + EPS:  # recovered above the band
                 bs.dd_status[band] = BandStatus.ARMED
-                result.signals.append(Signal(pos.ticker, "double_down", "BUY",
+                result.signals.append(Signal(pos.ticker, "buy", "BUY",
                     cause=f"withdrawn — {pos.ticker} recovered above {band:+.0%} drawdown band",
                     band=band, notes=["EXPIRED: condition cleared before confirmation"]))
         for band, st in list(bs.trim_status.items()):
@@ -214,7 +215,7 @@ def evaluate(snap: Snapshot) -> EngineResult:
         for band, st in list(bs.dd_status.items()):
             if st is BandStatus.PENDING and dd > band + EPS:  # recovered above the band
                 bs.dd_status[band] = BandStatus.ARMED
-                result.signals.append(Signal(pos.ticker, "watch_opportunity", "BUY",
+                result.signals.append(Signal(pos.ticker, "buy", "BUY",
                     cause=f"withdrawn — {pos.ticker} recovered above {band:+.0%} drawdown band",
                     band=band, notes=["EXPIRED: condition cleared before confirmation"]))
 
@@ -292,12 +293,26 @@ def evaluate(snap: Snapshot) -> EngineResult:
                      "bands": pending, "avg_basis": pos.avg_basis,
                      "vol_20d": md.vol_20d, "opportunity_score": _opportunity_score(gain, md.vol_20d)}))
 
-    # ---- Step 6: DOUBLE-DOWN (Rule 1, held) + WATCHLIST OPPORTUNITY (unheld) --------
-    # Both share one reserve pool and contend deepest-drawdown-first (§6).
-    dd_candidates = []
+    # ---- Step 6: BUY (Rule 1 + Rule 7) — one recommendation per ticker --------
+    # Opportunistic DCA: a ticker is due for a buy when a drawdown band deepens (dip) OR
+    # its own rolling cadence window has elapsed since its last buy fill — whichever (or
+    # both) apply. There is no shared calendar date; each ticker's clock is anchored on
+    # ITS last fill, so a name bought on the 3rd is next due on a rolling basis from the
+    # 3rd, not from some portfolio-wide date. When both conditions fire, dip sizing (the
+    # averaging-down ladder, reserve-funded) wins and the cadence reason is folded in as
+    # a secondary note — one signal per ticker, never two competing ones.
+    as_of_date = date.fromisoformat(snap.as_of)
+    frothy = _is_frothy(snap.macro, p)
+
+    def _due_for_cadence(pos) -> bool:
+        if pos.last_buy_date is None:
+            return True  # never bought — no clock running yet, so it's due
+        return (as_of_date - date.fromisoformat(pos.last_buy_date)).days >= p.dca_interval_days
+
+    buy_candidates = []
     for pos in snap.positions:
-        # Trim beats double-down (§6): suppress the dip-buy if the name trimmed this run
-        # OR has an unconfirmed trim still outstanding (else you'd see buy+sell at once).
+        # Trim beats a dip-buy (§6): suppress it if the name trimmed this run OR has an
+        # unconfirmed trim still outstanding (else you'd see buy+sell at once).
         bs_pos = band_state.get(pos.ticker)
         has_open_trim = bs_pos is not None and any(
             st is BandStatus.PENDING for st in bs_pos.trim_status.values())
@@ -317,33 +332,76 @@ def evaluate(snap: Snapshot) -> EngineResult:
         # that just crossed — so a dip-buy awaiting confirmation from an earlier run
         # gets refreshed to this run's price instead of sitting on a stale one.
         pending = [b for b in bands if bs.dd_status[b] is BandStatus.PENDING]
-        if not pending:
-            continue
-        deepest = min(pending)
-        deepest_k = bands.index(deepest) + 1
-        target = _dd_cumulative_target(p, deepest_k)
-        new_mult = max(0.0, target - bs.dd_deployed_mult)  # clamp to 3× cap
-        dollars = new_mult * p.base_for(pos.tier)
-        floored = _min_order(p, "double_down", dollars)
-        if floored is None:
-            result.diagnostics.append(
-                f"{pos.ticker}: dip-buy of ${dollars:,.0f} is under the "
-                f"${p.min_order_dollars:,.0f} per-order minimum — waiting for a deeper band")
-            continue
-        dollars, below_min = floored
-        dd_candidates.append({
-            "rule": "double_down", "dd": dd, "pos": pos, "md": md, "pending": pending,
-            "dollars": dollars, "below_min": below_min,
-            "cause": f"{pos.ticker} {dd:+.0%} off 52wk high — bands {[f'{b:+.0%}' for b in pending]}",
-            "notes": ["PE-exempt (dip buy)", "funded from reserve"],
-        })
+        due_cadence = _due_for_cadence(pos)
 
-    # Watchlist Opportunity: subscribed but unheld names. Reuses the same band ladder
-    # and PENDING/ARMED/FIRED hysteresis as Rule 1, but gated by opportunity_score so it
-    # only fires on drops that are unusual for THIS ticker's own volatility — a routine
-    # -20% wiggle for a choppy name shouldn't open a new position, a genuinely rare drop
-    # should. Sized as a flat starter tranche, not the averaging-down ladder (there's no
-    # existing basis to average into).
+        if pending:
+            deepest = min(pending)
+            deepest_k = bands.index(deepest) + 1
+            target = _dd_cumulative_target(p, deepest_k)
+            new_mult = max(0.0, target - bs.dd_deployed_mult)  # clamp to 3× cap
+            dollars = new_mult * p.base_for(pos.tier)
+            floored = _min_order(p, dollars, show_below_min=False)
+            if floored is None:
+                result.diagnostics.append(
+                    f"{pos.ticker}: dip-buy of ${dollars:,.0f} is under the "
+                    f"${p.min_order_dollars:,.0f} per-order minimum — waiting for a deeper band")
+                continue
+            dollars, below_min = floored
+            notes = ["PE-exempt (dip buy)", "funded from reserve"]
+            if due_cadence:
+                notes.append("also due for your rolling contribution — folded into this dip buy")
+            buy_candidates.append({
+                "dd": dd, "pos": pos, "md": md, "pending": pending,
+                "dollars": dollars, "below_min": below_min,
+                "cause": f"{pos.ticker} {dd:+.0%} off 52wk high — bands {[f'{b:+.0%}' for b in pending]}",
+                "notes": notes, "trigger": "dip+cadence" if due_cadence else "dip",
+                "funded_from": "reserve",
+            })
+        elif due_cadence and not p.is_core(pos.tier):
+            # No opportunity right now — the rolling contribution carries the ticker
+            # through a bullish stretch instead of waiting for a dip that isn't coming.
+            base_i = p.base_for(pos.tier)
+            deploy_base = base_i / 2 if p.auto_bank_5050 else base_i
+            bank = base_i / 2 if p.auto_bank_5050 else 0.0
+            # Momentum brake & froth: half-speed, NON-compounding (floor 0.5).
+            brake = md.ret_30d > p.momentum_brake_ret
+            mult = 0.5 if (brake or frothy) else 1.0
+            floored = _min_order(p, deploy_base * mult, show_below_min=False)
+            if floored is None:
+                result.diagnostics.append(
+                    f"{pos.ticker}: rolling contribution of ${deploy_base * mult:,.2f} is under "
+                    f"the ${p.min_order_dollars:,.0f} per-order minimum — accumulating")
+                continue
+            budget, _ = floored
+            # The contribution funds the fee as well as the shares (Rule 8).
+            deploy = gross_for_budget(pos.ticker, budget=budget, price=md.price, p=p)
+            if deploy <= 0:
+                result.diagnostics.append(
+                    f"{pos.ticker}: rolling contribution of ${budget:,.2f} is smaller than its "
+                    f"fees — skipped")
+                continue
+            since = ("no prior buy on record" if pos.last_buy_date is None
+                     else f"{(as_of_date - date.fromisoformat(pos.last_buy_date)).days}d since "
+                          f"your last {pos.ticker} buy")
+            notes = [f"bank ${bank:,.0f} to reserve" if bank else "no auto-bank", _pe_zone(md.fwd_pe)]
+            if brake:
+                notes.append("momentum brake ×0.5 (30d > +20%)")
+            if frothy:
+                notes.append("froth overlay ×0.5 (S&P fwd P/E rich)")
+            result.signals.append(Signal(pos.ticker, "buy", "BUY",
+                cause=f"{since} (≥{p.dca_interval_days}d cadence) — {pos.tier} base ${base_i:,.0f}",
+                size_shares=_round_shares(deploy / md.price), size_dollars=deploy,
+                notes=notes,
+                metrics={"price": md.price, "deploy": deploy, "bank": bank, "budget": budget,
+                         "tier": pos.tier, "brake": brake, "froth": frothy,
+                         "trigger": "cadence", "funded_from": "contribution",
+                         "below_min_order": False}))
+
+    # Same ladder/hysteresis as held dip-buys, but on subscribed-but-unheld names, gated
+    # by opportunity_score so it only fires on drops unusual for THIS ticker's own
+    # volatility. No cadence leg — there is no position yet to anchor a rolling clock on.
+    # Sized as a flat starter tranche, not the averaging-down ladder (no basis to average
+    # into).
     for pos in snap.watchlist:
         # Core-tier ETFs (ETF/ETFC) are already steered by Rule 3's core-build target —
         # don't also flag them here, or the same ticker gets two competing buy alerts.
@@ -363,29 +421,33 @@ def evaluate(snap: Snapshot) -> EngineResult:
         if not pending or score < p.watch_opportunity_min_score:
             continue
         dollars = p.watch_starter_mult * p.base_for(pos.tier)
-        # Starters below the floor are still surfaced (see _SHOW_BELOW_MIN) — a rare dip on
-        # a small name is worth knowing about even when the rule's own size is uneconomic.
-        dollars, below_min = _min_order(p, "watch_opportunity", dollars)  # type: ignore[misc]
-        dd_candidates.append({
-            "rule": "watch_opportunity", "dd": dd, "pos": pos, "md": md, "pending": pending,
+        # Starters below the floor are still surfaced — a rare dip on a small name is
+        # worth knowing about even when the rule's own size is uneconomic.
+        floored = _min_order(p, dollars, show_below_min=True)
+        dollars, below_min = floored  # type: ignore[misc]  # show_below_min=True never defers
+        buy_candidates.append({
+            "dd": dd, "pos": pos, "md": md, "pending": pending,
             "dollars": dollars, "below_min": below_min,
             "cause": (f"{pos.ticker} {dd:+.0%} off 52wk high, opportunity score {score:.1f} "
                       f"(≥{p.watch_opportunity_min_score:g} threshold) — new starter position"),
             "notes": ["starter tranche for a new position — not averaging down", "funded from reserve"],
+            "trigger": "dip", "funded_from": "reserve", "new_position": True,
         })
 
-    # Shared-reserve contention: deepest dd first; ties T1<T2 then alphabetical.
+    # Shared-reserve contention across every dip-triggered buy: deepest dd first; ties
+    # T1<T2 then alphabetical. Cadence-only buys never reach here — they're contribution-
+    # funded, not drawn from the reserve, so they don't contend for it.
     tier_rank = {"T1": 0, "T2": 1, "ETF": 2}
-    dd_candidates.sort(key=lambda c: (c["dd"], tier_rank.get(c["pos"].tier, 9), c["pos"].ticker))
+    buy_candidates.sort(key=lambda c: (c["dd"], tier_rank.get(c["pos"].tier, 9), c["pos"].ticker))
     available = snap.reserve_balance
-    for c in dd_candidates:
+    for c in buy_candidates:
         pos, md, pending, dollars, dd = c["pos"], c["md"], c["pending"], c["dollars"], c["dd"]
         if dollars <= 0:
             # Already at the cap — nothing to actually approve. Band stays latched
             # PENDING (won't re-check until confirmed/skipped/re-armed); just note it
             # rather than showing a "Buy $0 — Approve" card with nothing to confirm.
             result.diagnostics.append(
-                f"{pos.ticker}: {c['rule']} at {p.dd_cap_mult:g}× cap already — no new buy suggested")
+                f"{pos.ticker}: at {p.dd_cap_mult:g}× cap already — no new buy suggested")
             continue
         warnings = []
         # Reserve is drawn for the order value PLUS its commission (Rule 8) — otherwise
@@ -398,7 +460,7 @@ def evaluate(snap: Snapshot) -> EngineResult:
             warnings.append(f"reserve short by ${short:,.0f} — top up or fund from cash")
         else:
             available = max(0.0, available - need)
-        result.signals.append(Signal(pos.ticker, c["rule"], "BUY",
+        result.signals.append(Signal(pos.ticker, "buy", "BUY",
             cause=c["cause"],
             size_shares=_round_shares(dollars / md.price),
             size_dollars=dollars, band=min(pending), warnings=warnings,
@@ -406,47 +468,9 @@ def evaluate(snap: Snapshot) -> EngineResult:
             metrics={"price": md.price, "dd": dd, "high_52w": md.high_52w,
                      "bands": pending, "asset_class": pos.asset_class,
                      "reserve_short": any("reserve short" in w for w in warnings),
-                     "below_min_order": c["below_min"],
+                     "below_min_order": c["below_min"], "trigger": c["trigger"],
+                     "funded_from": c["funded_from"], "new_position": c.get("new_position", False),
                      "vol_20d": md.vol_20d, "opportunity_score": _opportunity_score(dd, md.vol_20d)}))
-
-    # ---- Step 7: BASE DCA (Rule 7) — scheduled monthly date, individual names --
-    # The ETF core is handled by the always-on core-build step below (Rule 3), so DCA
-    # here only covers individual names.
-    if snap.is_dca_day:
-        frothy = _is_frothy(snap.macro, p)
-        for pos in snap.positions:
-            if p.is_core(pos.tier):
-                continue  # core built by the dedicated step
-            md = snap.market.get(pos.ticker)
-            if md is None:
-                continue
-            base_i = p.base_for(pos.tier)
-            deploy_base = base_i / 2 if p.auto_bank_5050 else base_i
-            bank = base_i / 2 if p.auto_bank_5050 else 0.0
-            # Momentum brake & froth: half-speed, NON-compounding (floor 0.5).
-            brake = md.ret_30d > p.momentum_brake_ret
-            mult = 0.5 if (brake or frothy) else 1.0
-            # A skipped monthly contribution is gone, so an under-floor DCA is shown and
-            # flagged rather than deferred (see _SHOW_BELOW_MIN).
-            budget, dca_below_min = _min_order(p, "base_dca", deploy_base * mult)  # type: ignore[misc]
-            # The contribution funds the fee as well as the shares (Rule 8).
-            deploy = gross_for_budget(pos.ticker, budget=budget, price=md.price, p=p)
-            if deploy <= 0:
-                result.diagnostics.append(
-                    f"{pos.ticker}: base DCA of ${budget:,.2f} is smaller than its fees — skipped")
-                continue
-            notes = [f"bank ${bank:,.0f} to reserve" if bank else "no auto-bank", _pe_zone(md.fwd_pe)]
-            if brake:
-                notes.append("momentum brake ×0.5 (30d > +20%)")
-            if frothy:
-                notes.append("froth overlay ×0.5 (S&P fwd P/E rich)")
-            result.signals.append(Signal(pos.ticker, "base_dca", "BUY",
-                cause=f"scheduled DCA — {pos.tier} base ${base_i:,.0f}",
-                size_shares=_round_shares(deploy / md.price), size_dollars=deploy,
-                notes=notes,
-                metrics={"price": md.price, "deploy": deploy, "bank": bank, "budget": budget,
-                         "tier": pos.tier, "brake": brake, "froth": frothy, "steered": False,
-                         "below_min_order": dca_below_min}))
 
     # ---- Step 7b: CORE BUILD (Rule 3, proactive) — keep the index core ≥ 40% ---
     # Runs every evaluation, not just the DCA day. Targets a subscribed core ETF even
@@ -493,7 +517,7 @@ def evaluate(snap: Snapshot) -> EngineResult:
         for c, raw_budget in plan:
             price = price_of(c.ticker)
             # The core gap widens on its own, so an under-floor round just waits.
-            capped = _min_order(p, "core_build", raw_budget)
+            capped = _min_order(p, raw_budget, show_below_min=False)
             if capped is None:
                 result.diagnostics.append(
                     f"{c.ticker}: core contribution of ${raw_budget:,.0f} is under the "
@@ -540,7 +564,7 @@ def evaluate(snap: Snapshot) -> EngineResult:
     idle = snap.flags.idle_cash + excess_reserve
     if invested_equity and idle > p.cash_ceiling * invested_equity:
         # Idle cash keeps sitting there, so an under-floor sweep just waits for more.
-        swept = _min_order(p, "cash_floor", idle - p.cash_ceiling * invested_equity)
+        swept = _min_order(p, idle - p.cash_ceiling * invested_equity, show_below_min=False)
         etf = (next((pos for pos in snap.positions if pos.tier == p.etf_tier_key), None)
                or next((pos for pos in snap.positions if p.is_core(pos.tier)), None))
         if swept is None:
@@ -578,7 +602,7 @@ def evaluate(snap: Snapshot) -> EngineResult:
     individual_count = sum(1 for pos in snap.positions if pos.asset_class != "ETF")
     if individual_count >= p.max_holdings:
         for s in result.signals:
-            if s.action == "BUY" and s.ticker not in held and s.rule not in ("base_dca", "core_build"):
+            if s.action == "BUY" and s.ticker not in held and s.rule != "core_build":
                 s.rule = "replace"
                 s.action = "REPLACE"
                 s.notes.append(f"at MAX_HOLDINGS ({p.max_holdings}) — drop a name before adding {s.ticker}")

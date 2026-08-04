@@ -16,9 +16,15 @@ from tradr.engine import (
 
 
 def pos(ticker: str, *, tier: str = "T1", shares: float = 100.0,
-        avg_basis: float = 100.0, asset_class: str = "STOCK") -> Position:
+        avg_basis: float = 100.0, asset_class: str = "STOCK",
+        last_buy_date: str | None = "2026-07-20") -> Position:
+    # Default last_buy_date is just a few days before the default snapshot `as_of`
+    # (2026-07-24) — well under the 30d rolling cadence window — so existing tests that
+    # don't care about cadence don't accidentally trip it. Pass last_buy_date=None for
+    # "never bought" or an older date to test the cadence leg explicitly.
     return Position(ticker=ticker, tier=tier, shares=shares,
-                    avg_basis=avg_basis, asset_class=asset_class)
+                    avg_basis=avg_basis, asset_class=asset_class,
+                    last_buy_date=last_buy_date)
 
 
 def md(ticker: str, *, price: float, high_52w: float | None = None,
@@ -30,12 +36,11 @@ def md(ticker: str, *, price: float, high_52w: float | None = None,
                       ret_30d=ret_30d, ret_60d=ret_60d, fwd_pe=fwd_pe, vol_20d=vol_20d)
 
 
-def make_snapshot(positions, market, *, reserve=1_000_000.0, is_dca_day=False,
+def make_snapshot(positions, market, *, reserve=1_000_000.0, as_of="2026-07-24",
                   macro=None, flags=None, avoid=frozenset(), band_state=None,
                   params: Params | None = None, watchlist=None) -> Snapshot:
     return Snapshot(
-        as_of="2026-07-24",
-        is_dca_day=is_dca_day,
+        as_of=as_of,
         positions=list(positions),
         market={m.ticker: m for m in market},
         band_state=band_state or {},

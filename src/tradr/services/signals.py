@@ -58,11 +58,12 @@ def _save_band_state(s: Session, bs: BandState) -> None:
 
 # --- snapshot ---------------------------------------------------------------
 
-def build_snapshot(s: Session, provider: MarketDataProvider, *, as_of: date,
-                   is_dca_day: bool) -> Snapshot:
+def build_snapshot(s: Session, provider: MarketDataProvider, *, as_of: date) -> Snapshot:
+    last_buys = ledger_svc.last_buy_dates(s)
     positions = [
         Position(ticker=p.ticker, tier=p.tier, shares=p.shares,
-                 avg_basis=p.avg_basis, asset_class=p.asset_class)
+                 avg_basis=p.avg_basis, asset_class=p.asset_class,
+                 last_buy_date=(last_buys[p.ticker].isoformat() if p.ticker in last_buys else None))
         for p in ledger_svc.derive_positions(s)
     ]
     held = {p.ticker for p in positions}
@@ -75,7 +76,10 @@ def build_snapshot(s: Session, provider: MarketDataProvider, *, as_of: date,
         if md is None:
             continue
         market[t] = md
-        s.add(MarketSnapshotRow(ticker=t, as_of=as_of, price=md.price, high_52w=md.high_52w,
+        # Upsert: keep exactly 1 row per ticker so the table never grows unboundedly.
+        s.execute(delete(MarketSnapshotRow).where(MarketSnapshotRow.ticker == t))
+        s.add(MarketSnapshotRow(ticker=t, as_of=as_of, price=md.price,
+                                prev_close=md.prev_close, high_52w=md.high_52w,
                                 ret_30d=md.ret_30d, ret_60d=md.ret_60d, fwd_pe=md.fwd_pe))
 
     band_state = {r.ticker: _load_band_state(r) for r in s.scalars(select(EngineStateRow)).all()}
@@ -89,7 +93,6 @@ def build_snapshot(s: Session, provider: MarketDataProvider, *, as_of: date,
 
     return Snapshot(
         as_of=as_of.isoformat(),
-        is_dca_day=is_dca_day,
         positions=positions,
         market=market,
         band_state=band_state,
@@ -133,9 +136,8 @@ def persist_result(s: Session, result) -> list[SignalRow]:
     return created
 
 
-def run_and_persist(s: Session, provider: MarketDataProvider, *, as_of: date,
-                    is_dca_day: bool) -> list[SignalRow]:
-    snap = build_snapshot(s, provider, as_of=as_of, is_dca_day=is_dca_day)
+def run_and_persist(s: Session, provider: MarketDataProvider, *, as_of: date) -> list[SignalRow]:
+    snap = build_snapshot(s, provider, as_of=as_of)
     result = engine_evaluate(snap)
     return persist_result(s, result)
 
@@ -194,7 +196,8 @@ def confirm_signal(s: Session, signal_id: int, *, fill_qty: float, fill_price: f
         lot = ledger_svc.record_trade(s, ticker=sig.ticker, side="buy", qty=fill_qty,
                                       price=fill_price, trade_date=td, source_signal_id=sig.id,
                                       fee=fees)
-        if sig.rule in ("double_down", "watch_opportunity"):
+        funded_from = sig.metrics.get("funded_from") if sig.rule == "buy" else None
+        if funded_from == "reserve":
             # Reserve-funded: the reserve pays for the shares AND the fee, as separate
             # lines so the fee is visible in the ledger rather than buried in the draw.
             # The 3x cap measures capital put INTO the name, so it counts gross only.
@@ -208,16 +211,16 @@ def confirm_signal(s: Session, signal_id: int, *, fill_qty: float, fill_price: f
             row = s.get(EngineStateRow, sig.ticker)
             if row is not None and base_i:
                 # Counts against the same 3x-per-name cap once it becomes a held
-                # position, whether the first buy came from double-down or here.
+                # position, whether the first buy came from a dip or here.
                 row.dd_deployed_mult += gross / base_i
             _latch_band(s, sig.ticker, "dd", sig.band, BandStatus.FIRED)
-        elif sig.rule == "base_dca":
+        elif funded_from == "contribution":
             if params.auto_bank_5050:
                 base_i = params.base_for(_tier_of(s, sig.ticker))
                 ledger_svc.add_reserve(s, kind="base_bank", amount=base_i / 2,
                                        note=f"50/50 bank {sig.ticker}", source_lot_id=lot.id)
-        # core_build / base_dca / cash_floor are contribution-funded: the engine already
-        # sized the order so shares + fee fit the contribution, so no reserve movement.
+        # core_build / cash_floor are contribution-funded: the engine already sized the
+        # order so shares + fee fit the contribution, so no reserve movement.
     elif sig.action == "SELL":
         lot = ledger_svc.record_trade(s, ticker=sig.ticker, side="sell", qty=fill_qty,
                                       price=fill_price, trade_date=td, source_signal_id=sig.id,
@@ -308,7 +311,7 @@ def _reconcile_bands_for_manual_fill(s: Session, *, ticker: str, side: str, qty:
     params = cfg.build_params(s)
 
     if side == "buy":
-        statuses, rules = bs.dd_status, ("double_down", "watch_opportunity")
+        statuses, rules = bs.dd_status, ("buy",)
         uni = s.get(UniverseRow, ticker)
         bands = params.bands_for(uni.asset_class if uni else "STOCK")
         snap = _latest_snapshot(s, ticker)
@@ -396,7 +399,7 @@ def void_trade(s: Session, lot_id: int) -> dict:
     # a since-changed base_unit can under-refund but never drive the counter negative.
     sig = s.get(SignalRow, lot.source_signal_id) if lot.source_signal_id else None
     rearmed_band = None
-    if sig is not None and sig.rule in ("double_down", "watch_opportunity"):
+    if sig is not None and sig.rule == "buy" and sig.band is not None:
         row = s.get(EngineStateRow, lot.ticker)
         base_i = cfg.build_params(s).base_for(_tier_of(s, lot.ticker))
         if row is not None and base_i:
@@ -421,8 +424,10 @@ def skip_signal(s: Session, signal_id: int) -> SignalRow:
     params = cfg.build_params(s)
     sig.state = "SKIPPED"
     sig.snooze_until = date.today() + timedelta(days=params.snooze_days)
-    # Return the band to ARMED (SNOOZED = quiet-then-rearm, ruleset §2).
-    ladder = "dd" if sig.rule in ("double_down", "watch_opportunity") else "trim" if sig.rule == "trim" else None
+    # Return the band to ARMED (SNOOZED = quiet-then-rearm, ruleset §2). A cadence-only
+    # buy has no band (sig.band is None) — nothing to re-arm for it.
+    ladder = ("dd" if sig.rule == "buy" and sig.band is not None
+              else "trim" if sig.rule == "trim" else None)
     if ladder:
         _latch_band(s, sig.ticker, ladder, sig.band, BandStatus.ARMED)
     s.flush()

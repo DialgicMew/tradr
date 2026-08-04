@@ -14,7 +14,7 @@ def test_trim_beats_double_down_same_day():
                          [md("AAA", price=125, high_52w=250, ret_60d=0.5)])
     result = evaluate(snap)
     assert any(s.rule == "trim" for s in result.signals)
-    assert not any(s.rule == "double_down" and s.action == "BUY" for s in result.signals)
+    assert not any(s.rule == "buy" and s.action == "BUY" for s in result.signals)
     # DD band left untouched (not burned) since it was suppressed, not fired.
     assert result.band_state["AAA"].dd_status[-0.20] is BandStatus.ARMED
 
@@ -26,15 +26,17 @@ def test_open_trim_suppresses_double_down_across_runs():
     snap = make_snapshot([pos("AAA", tier="T1", shares=100, avg_basis=50)],
                          [md("AAA", price=125, high_52w=250, ret_60d=0.5)], band_state=bs)
     result = evaluate(snap)
-    assert not any(s.rule == "double_down" and s.action == "BUY" for s in result.signals)
+    assert not any(s.rule == "buy" and s.action == "BUY" for s in result.signals)
 
 
 def test_dca_momentum_brake_halves_deploy():
-    snap = make_snapshot([pos("AAA", tier="T1")], [md("AAA", price=100, ret_30d=0.25)],
-                         is_dca_day=True)
-    dca = next(s for s in evaluate(snap).signals if s.rule == "base_dca")
+    # No dip (high_52w defaults to price) — due purely on the rolling cadence leg.
+    snap = make_snapshot([pos("AAA", tier="T1", last_buy_date=None)],
+                         [md("AAA", price=100, ret_30d=0.25)])
+    dca = next(s for s in evaluate(snap).signals if s.rule == "buy")
     # base_i 2000, auto-bank -> deploy_base 1000, ×0.5 brake -> a 500 contribution, out of
     # which the fee is paid (Rule 8), so the shares bought come to slightly under it.
+    assert dca.metrics["trigger"] == "cadence"
     assert dca.metrics["budget"] == 500
     assert dca.metrics["cash_needed"] == pytest.approx(500)
     assert dca.size_dollars == pytest.approx(500 - dca.metrics["cost"]["total"])
@@ -43,16 +45,17 @@ def test_dca_momentum_brake_halves_deploy():
 
 def test_froth_and_brake_do_not_compound():
     macro = Macro(sp_fwd_pe=25.0, sp_10yr_avg_fwd_pe=20.0)  # 25 > 20*1.15 -> frothy
-    snap = make_snapshot([pos("AAA", tier="T1")], [md("AAA", price=100, ret_30d=0.25)],
-                         is_dca_day=True, macro=macro)
-    dca = next(s for s in evaluate(snap).signals if s.rule == "base_dca")
+    snap = make_snapshot([pos("AAA", tier="T1", last_buy_date=None)],
+                         [md("AAA", price=100, ret_30d=0.25)], macro=macro)
+    dca = next(s for s in evaluate(snap).signals if s.rule == "buy")
     assert dca.metrics["budget"] == 500  # floor at 0.5, NOT 0.25
 
 
 def test_dca_normal_market_is_5050():
-    snap = make_snapshot([pos("AAA", tier="T1")], [md("AAA", price=100, fwd_pe=15)],
-                         is_dca_day=True)
-    dca = next(s for s in evaluate(snap).signals if s.rule == "base_dca")
+    snap = make_snapshot([pos("AAA", tier="T1", last_buy_date=None)],
+                         [md("AAA", price=100, fwd_pe=15)])
+    dca = next(s for s in evaluate(snap).signals if s.rule == "buy")
+    assert dca.metrics["trigger"] == "cadence"
     assert dca.metrics["budget"] == 1000          # base_i/2, full speed
     assert dca.metrics["cash_needed"] == pytest.approx(1000)  # fee comes out of it
     assert any("bank $1,000" in n for n in dca.notes)

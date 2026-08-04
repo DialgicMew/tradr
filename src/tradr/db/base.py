@@ -28,6 +28,7 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("lots", "fee", "FLOAT DEFAULT 0.0"),  # Rule 8 — per-fill transaction cost
     ("reserve_entries", "source_lot_id", "INTEGER"),  # lets a void reverse its movements
+    ("market_snapshot", "prev_close", "FLOAT"),  # previous trading-day close for day-change
 )
 
 
@@ -45,11 +46,26 @@ def _apply_added_columns() -> None:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
 
 
+def _deduplicate_market_snapshots() -> None:
+    """Keep only the most recent row per ticker — converts the old append-only snapshot
+    table into a 1-row-per-ticker current-state cache. Idempotent."""
+    from sqlalchemy import inspect, text
+
+    if "market_snapshot" not in set(inspect(engine).get_table_names()):
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM market_snapshot WHERE id NOT IN "
+            "(SELECT MAX(id) FROM market_snapshot GROUP BY ticker)"
+        ))
+
+
 def init_db() -> None:
     from tradr.db import models  # noqa: F401 — register mappers
 
     Base.metadata.create_all(engine)
     _apply_added_columns()
+    _deduplicate_market_snapshots()
 
 
 @contextmanager

@@ -32,6 +32,7 @@ class Position:
     shares: float
     avg_basis: float          # average cost per share
     asset_class: str = "STOCK"  # "STOCK" | "ETF" (drives which DD ladder applies)
+    last_buy_date: str | None = None  # ISO date of most recent buy fill (rolling cadence anchor)
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class MarketData:
     ret_60d: float = 0.0      # trailing 60-day gain — trim velocity gate (Rule 2)
     fwd_pe: float | None = None
     vol_20d: float = 0.0      # stddev of trailing 20d daily returns — this ticker's "normal" (opportunity scoring)
+    prev_close: float | None = None  # previous trading day's close — for accurate day-change display
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,6 @@ class Snapshot:
     """The complete, immutable input to one engine run."""
 
     as_of: str                        # ISO date string (passed in, never read from a clock)
-    is_dca_day: bool                  # True only on the scheduled monthly DCA date (Rule 7)
     positions: list[Position]
     market: dict[str, MarketData]     # keyed by ticker
     band_state: dict[str, BandState]  # keyed by ticker
@@ -98,7 +99,7 @@ class Signal:
     """One advisory notification (ruleset §0: {cause, action, size_hint, asset, band})."""
 
     ticker: str
-    rule: str                 # "double_down" | "trim" | "base_dca" | "cash_floor" | "replace"
+    rule: str                 # "buy" | "trim" | "core_build" | "cash_floor" | "replace"
     action: str               # "BUY" | "SELL" | "DEPLOY" | "REPLACE"
     cause: str                # human-readable trigger
     size_shares: float = 0.0

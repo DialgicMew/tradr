@@ -83,9 +83,8 @@ function ApproveModal({ sig, onClose, onDone }) {
 }
 
 const RULE_LABEL = {
-  double_down: "Buy the dip", trim: "Take profit", base_dca: "Monthly plan",
+  buy: "Buy", trim: "Take profit",
   core_build: "Build index core", cash_floor: "Idle cash", replace: "At holdings cap",
-  watch_opportunity: "New position opportunity",
 };
 
 // "Opportunistic" ranking: how unusual the move is for THIS ticker (opportunity_score,

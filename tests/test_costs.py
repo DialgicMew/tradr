@@ -269,21 +269,24 @@ def test_watch_opportunity_below_the_floor_is_shown_and_flagged_not_hidden():
                          [md("BBB", price=100), md("AAA", price=65, high_52w=100, vol_20d=0.02)],
                          params=p, watchlist=[watch])
     sig = _buy(evaluate(snap), "AAA")
-    assert sig.rule == "watch_opportunity"
+    assert sig.rule == "buy"
+    assert sig.metrics["trigger"] == "dip"
     assert sig.size_dollars == 25.0           # NOT inflated to the floor
     assert sig.metrics["below_min_order"] is True
     assert any("under your $100 per-order minimum" in w for w in sig.warnings)
     assert any("size up to $100" in w for w in sig.warnings)
 
 
-def test_base_dca_below_the_floor_is_shown_and_flagged_not_hidden():
-    # A skipped monthly contribution never comes back, so it must not be deferred.
+def test_cadence_buy_below_the_floor_is_deferred_not_shown():
+    # Unlike a watchlist dip starter, a rolling-cadence buy with no dip behind it just
+    # waits and accumulates when it's this uneconomical — the $14-order-at-29%-fees
+    # problem this floor exists to prevent.
     p = _floor_params()                       # T2 deploy = base 25 / 2 = $12.50
-    snap = make_snapshot([pos("AAA", tier="T2", shares=10, avg_basis=100)],
-                         [md("AAA", price=100)], params=p, is_dca_day=True)
-    dca = next(s for s in evaluate(snap).signals if s.rule == "base_dca")
-    assert dca.metrics["below_min_order"] is True
-    assert any("per-order minimum" in w for w in dca.warnings)
+    snap = make_snapshot([pos("AAA", tier="T2", shares=10, avg_basis=100, last_buy_date=None)],
+                         [md("AAA", price=100)], params=p)
+    result = evaluate(snap)
+    assert not any(s.rule == "buy" and s.ticker == "AAA" for s in result.signals)
+    assert any("per-order minimum" in d and "accumulating" in d for d in result.diagnostics)
 
 
 def test_floor_never_blocks_a_sell():

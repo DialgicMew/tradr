@@ -29,22 +29,6 @@ def is_trading_day(d: date) -> bool:
         return d.weekday() < 5  # fallback: Mon–Fri (ignores holidays)
 
 
-def is_dca_day(d: date, dom: int) -> bool:
-    """Scheduled monthly DCA date, rolled to the next trading day if closed (Rule 7)."""
-    if d.day < dom:
-        return False
-    # first trading day on/after the configured day-of-month
-    from calendar import monthrange
-
-    last = monthrange(d.year, d.month)[1]
-    probe = date(d.year, d.month, min(dom, last))
-    while not is_trading_day(probe):
-        probe = probe.fromordinal(probe.toordinal() + 1)
-        if probe.month != d.month:
-            return False
-    return d == probe
-
-
 def run_once(as_of: date | None = None, *, force: bool = False, notify: bool = True) -> dict:
     settings = get_settings()
     as_of = as_of or date.today()
@@ -52,19 +36,18 @@ def run_once(as_of: date | None = None, *, force: bool = False, notify: bool = T
         log.info("market closed on %s — skipping run", as_of)
         return {"ran": False, "reason": "market closed", "new_signals": 0}
 
-    dca = is_dca_day(as_of, settings.dca_day_of_month)
     provider = get_provider(settings.market_data_provider)
 
     with session_scope() as s:
         if not cfg.is_configured(s):
             log.warning("engine not configured — skipping run")
             return {"ran": False, "reason": "not configured", "new_signals": 0}
-        new_rows = sig_svc.run_and_persist(s, provider, as_of=as_of, is_dca_day=dca)
+        new_rows = sig_svc.run_and_persist(s, provider, as_of=as_of)
         payloads = [_to_payload(r) for r in new_rows]
 
     if notify and payloads:
         _notify(payloads)
-    return {"ran": True, "is_dca_day": dca, "new_signals": len(payloads), "signals": payloads}
+    return {"ran": True, "new_signals": len(payloads), "signals": payloads}
 
 
 def _to_payload(row) -> dict:

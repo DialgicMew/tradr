@@ -59,6 +59,7 @@
 | `FROTH_THRESHOLD` | how far S&P fwd P/E must exceed its 10-yr avg to count as "frothy" | — |
 | `CASH_CEILING` | idle-capital ceiling that triggers a deploy nudge | 5 % of portfolio |
 | `MAX_HOLDINGS` | cap on number of individual stocks (ETF core excluded) | 20 |
+| `DCA_INTERVAL_DAYS` | rolling per-ticker cadence window since that ticker's own last buy fill | 30 days |
 
 ---
 
@@ -149,35 +150,46 @@ silently suppresses its future dip-buys. Voiding is idempotent.
    band stays armed but does not fire today. Fire eligible bands. **If a name
    trims today, suppress its double-down for today** (its DD bands are left
    untouched, not burned). Proceeds recycle into the reserve on DONE.
-6. **DOUBLE-DOWN (Rule 1)** — for names not trimming: collect crossed bands (gap-
-   through fires all crossed at once), resolve **shared-reserve contention
-   deepest-`dd`-first** (ties: Tier 1 before Tier 2, then alphabetical), size first
-   band ≈ 2× topping toward `DD_CAP` = 3× (deeper bands add until the cap; further
-   bands suggest 0), fund from reserve, flag any shortfall.
-7. **BASE DCA (Rule 7)** — *monthly scheduled date only*: compute `BASE_i` per name;
-   apply **momentum brake** (×0.5 if 30-day return > +20%) and **froth overlay**
-   (×0.5 if S&P fwd P/E exceeds 10-yr avg by `FROTH_THRESHOLD`) — these **do NOT
-   compound** (deploy multiplier floors at 0.5); apply 50/50 split; **Rule 3 steers
-   contributions into the ETF** if core < 40%; annotate the PE zone (advisory only).
-8. **Cash floor (Rule 6)** — if idle capital (uncommitted cash + reserve *above*
+6. **BUY (Rule 1 + Rule 7, opportunistic DCA)** — one signal per ticker, per §0's
+   consolidation: for names not trimming, check **both** legs —
+   - *Dip leg:* collect crossed bands (gap-through fires all crossed at once),
+     resolve **shared-reserve contention deepest-`dd`-first** (ties: Tier 1 before
+     Tier 2, then alphabetical), size first band ≈ 2× topping toward `DD_CAP` = 3×
+     (deeper bands add until the cap; further bands suggest 0), fund from reserve,
+     flag any shortfall.
+   - *Cadence leg:* if no dip band is active AND `DCA_INTERVAL_DAYS` have elapsed
+     since that ticker's own last buy fill (a **rolling, per-ticker** clock, not a
+     shared calendar date) → compute `BASE_i`; apply **momentum brake** (×0.5 if
+     30-day return > +20%) and **froth overlay** (×0.5 if S&P fwd P/E exceeds 10-yr
+     avg by `FROTH_THRESHOLD`) — these **do NOT compound** (deploy multiplier floors
+     at 0.5); apply 50/50 split; **Rule 3 steers contributions into the ETF** if
+     core < 40%; annotate the PE zone (advisory only); fund from the contribution,
+     not the reserve.
+   - If both legs are due on the same ticker, the dip leg wins (larger, reserve-
+     funded, already covers "money going into this name") and the cadence reason is
+     folded into that one signal's notes rather than emitted as a second, competing
+     recommendation. Any confirmed buy — dip or cadence — resets that ticker's
+     rolling clock, since it was still capital deployed into the name.
+7. **Cash floor (Rule 6)** — if idle capital (uncommitted cash + reserve *above*
    `RESERVE_TARGET`) > `CASH_CEILING` → suggest deploying the excess into the **ETF
    core**.
-9. **Emergency-fund gate** — if the user's emergency-fund flag is unset, attach a
+8. **Emergency-fund gate** — if the user's emergency-fund flag is unset, attach a
    "confirm 6–12 months funded first" **warning** to every buy signal (warn-only,
    does not block).
-10. **Diversification (Rule 5)** — if a **new** name's buy fires while at
-    `MAX_HOLDINGS` → emit a **"replace something?"** notification (requires dropping
-    a name first). Existing holdings signal normally.
-11. **Emit** all resulting signals.
-
-> Note: on non-scheduled days, step 7 is skipped; trim / double-down / cash-floor /
-> expiry checks still run daily.
+9. **Diversification (Rule 5)** — if a **new** name's buy fires while at
+   `MAX_HOLDINGS` → emit a **"replace something?"** notification (requires dropping
+   a name first). Existing holdings signal normally.
+10. **Emit** all resulting signals.
 
 ---
 
 ## 5. The rules (detail + rationale)
 
 ### Rule 1 — Per-Stock Double-Down
+> As of the opportunistic-DCA consolidation (§4 step 6), this rule and Rule 7 no
+> longer emit two competing recommendations for the same ticker — they merge into
+> one **"buy"** signal (dip sizing wins when both are due; see Rule 7 for the
+> cadence leg and the bullish-market caveat).
 - **Trigger:** per-stock drawdown from the API's 52-week high crosses a band.
   Asset-class-dependent: **ETF ladder –10/–20/–30/–40**, **stock ladder
   –20/–30/–40/–50**.
@@ -265,18 +277,29 @@ silently suppresses its future dip-buys. Voiding is idempotent.
   cash floor with the reserve strategy — without the earmark, the floor would
   continuously sweep the dry powder away and defeat the double-down engine.
 
-### Rule 7 — DCA Base Schedule
-- **`BASE_i = BASE_UNIT × tier_weight`** (Tier 1 > Tier 2 > ETF). Total monthly
+### Rule 7 — Rolling Contribution (opportunistic DCA cadence)
+- **`BASE_i = BASE_UNIT × tier_weight`** (Tier 1 > Tier 2 > ETF). Total contribution
   outflow scales with holdings.
-- **Cadence:** monthly on a fixed date; if the market is closed → **next trading
-  day**.
+- **Cadence is rolling and per-ticker, not a shared calendar date.** Each name's
+  clock is anchored on **its own** last buy fill — a name bought on the 3rd is next
+  due `DCA_INTERVAL_DAYS` (30, default) from the 3rd, independent of every other
+  name's schedule. A dip-buy resets the same clock: it was still capital going into
+  the name, so a redundant cadence buy right after would just be noise.
+- **Only fires when there's no dip to chase.** If the name's Rule 1 ladder currently
+  has a pending band, the dip-sized, reserve-funded buy fires instead and the
+  cadence reason is folded into it as a secondary note — never a second signal.
 - **50/50 split:** normal market → deploy `BASE_i/2`, bank `BASE_i/2` into reserve.
-  Bad market for a name (its double-down band is active) → deploy `BASE_i/2` **plus
-  reserve draw**, per Rule 1's ladder and 3× cap.
 - **Momentum brake:** if a name's trailing 30-day return > +20% → **halve its
   deploy** (bank portion unchanged). Track the spike peak; **release when price
-  pulls back `BRAKE_RELEASE_PCT` off that peak.** (Brake and double-down conditions
-  are mutually exclusive, so no clash.)
+  pulls back `BRAKE_RELEASE_PCT` off that peak.**
+- **Known, accepted limitation — the bullish-market case.** In a market with little
+  or no drawdown, the cadence leg is the *only* thing firing: it forces a buy on
+  schedule regardless of opportunity, same as classic DCA. This is by design — the
+  alternative (skip when there's nothing cheap) means capital sits idle
+  indefinitely waiting for a dip that may not come. The system does not currently
+  taper cadence size in a frothy/bullish market beyond the existing momentum-brake
+  and froth-overlay halving above; a further "reduce cadence contribution when
+  richly valued" overlay is a candidate future refinement, not yet built.
 
 ### Rule 8 — Transaction costs (IBKR Tiered)
 - Every order the engine proposes is **priced before you see it**: commission + GST +
@@ -292,13 +315,16 @@ silently suppresses its future dip-buys. Voiding is idempotent.
   ~$3,400 per order; the US floor is a fifth as large. Splitting entries across the
   month is nearly free on the US side and expensive on the LSE side. Three $200 US
   orders cost ~$0.86 extra; three $133 LSE orders cost ~$4.46 extra.
-- **Whichever pot funds the order pays the fee.**
-  - *Reserve-funded* (double-down, watch opportunity, trim): the reserve is drawn for
-    the order value **and** the fee, as two separate ledger lines (`dd_draw`, `fee`) so
-    the cost is visible rather than buried inside the draw.
-  - *Contribution-funded* (core build, base DCA, cash floor): the order is sized so
-    **shares + fee fit the contribution** — a $180 core contribution buys ~$177.77 of
-    an LSE line and hands $2.23 to IBKR. The reserve does not move.
+- **Whichever pot funds the order pays the fee.** The unified "buy" signal (§4 step
+  6) carries which pot funded it in its own metrics, not in a separate rule name.
+  - *Reserve-funded* (a dip-triggered buy — held or a new watchlist starter — plus
+    trim): the reserve is drawn for the order value **and** the fee, as two separate
+    ledger lines (`dd_draw`, `fee`) so the cost is visible rather than buried inside
+    the draw.
+  - *Contribution-funded* (a cadence-only buy with no dip behind it, core build, cash
+    floor): the order is sized so **shares + fee fit the contribution** — a $180
+    core contribution buys ~$177.77 of an LSE line and hands $2.23 to IBKR. The
+    reserve does not move.
 - **Every fill carries its cost** (`lots.fee`), whichever pot paid it, so "fees paid YTD"
   is one query. Voiding a trade removes its fee with it.
 - **Brokerage is part of cost basis.** A buy contributes `qty × price + fee`: 1 share at
@@ -327,11 +353,17 @@ silently suppresses its future dip-buys. Voiding is idempotent.
     for that crash cycle. That concentration is the intent, not a leak.
   - Anything smaller is **deferred, not deleted** — and the distinction that matters:
     **hide only what re-derives on its own; show-and-flag anything that would be lost.**
-    Dip-buys, core build and cash floor are hidden (a latched band reappears at a deeper
-    rung with a bigger target; the core gap widens; idle cash keeps sitting). Base DCA and
-    watch opportunities are **shown with a warning** — a skipped monthly contribution never
-    comes back, and a rare dip on a small name is worth knowing about even when the rule's
-    own starter size is uneconomic.
+    Held-position dip-buys, cadence-only buys, core build and cash floor are all hidden
+    (a latched band reappears at a deeper rung with a bigger target; a skipped cadence
+    buy just accumulates and fires next run instead of eating a fee-dominated order; the
+    core gap widens; idle cash keeps sitting). A new **watchlist starter** buy is the one
+    exception, **shown with a warning** instead — a rare dip on a small unheld name is
+    worth knowing about even when the rule's own starter size is uneconomic.
+    - *Revision note:* cadence-only buys used to be shown-and-flagged like a watchlist
+      starter, on the theory that a skipped monthly contribution never comes back. That
+      produced orders as small as $14 losing ~15–30% to commissions. Deferring instead —
+      the contribution simply waits and fires next run once due again — trades a few
+      days of delay for not burning double-digit percentages of the contribution on fees.
   - **Sells are exempt.** A fee floor must never trap you in a position.
   - Beware the interaction with `BASE_UNIT`: a floor above a tier's 3× cap excludes that
     tier permanently, since its ladder target can never grow to reach it. Check
@@ -356,13 +388,14 @@ silently suppresses its future dip-buys. Voiding is idempotent.
 ## 6. Precedence & conflict-resolution summary
 
 1. **Hard constraints** (3× cap, zero leverage) override everything.
-2. **Trim > double-down** (per name, per day).
-3. **Rule 3 ETF steering > Rule 7 tier weight** when the core is underweight.
-4. **Core allocation** is corrected by contributions only, **never by selling**.
-5. **PE gate** is advisory annotation only; **double-downs are PE-exempt**.
-6. **Froth and momentum half-speeds do not stack** (multiplier floors at 0.5).
-7. **Emergency-fund** gate is warn-only.
-8. **Reserve earmark** (up to `RESERVE_TARGET`) is exempt from the cash floor.
+2. **Trim > buy** (per name, per day) — covers both the dip leg and the cadence leg.
+3. **Dip leg > cadence leg** (per name, per day) — one "buy" signal, not two, when both fire.
+4. **Rule 3 ETF steering > Rule 7 tier weight** when the core is underweight.
+5. **Core allocation** is corrected by contributions only, **never by selling**.
+6. **PE gate** is advisory annotation only; **dip-triggered buys are PE-exempt**.
+7. **Froth and momentum half-speeds do not stack** (multiplier floors at 0.5).
+8. **Emergency-fund** gate is warn-only.
+9. **Reserve earmark** (up to `RESERVE_TARGET`) is exempt from the cash floor.
 
 ---
 

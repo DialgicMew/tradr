@@ -43,6 +43,12 @@ class Params:
     watch_opportunity_min_score: float = 8.0              # [DEFAULT] min opportunity_score to fire
     watch_starter_mult: float = 1.0                       # [DEFAULT] flat starter size, ×base_for(tier)
 
+    # --- Buy cadence (Rule 7, opportunistic DCA) ---
+    # Rolling per-ticker window, anchored on that ticker's own last buy fill — not a fixed
+    # calendar day shared across the whole portfolio. A dip-buy resets this clock too: it
+    # was still money going into the name, so a redundant cadence buy right after is noise.
+    dca_interval_days: int = 30                           # [DEFAULT] days since last buy
+
     # --- Trim (Rule 2) ---
     trim_bands: tuple[float, ...] = TRIM_BANDS            # [DEFAULT] +120/+170/+220%
     trim_pct: float = 0.20                                # [DEFAULT] 20% of current shares
