@@ -23,7 +23,7 @@ a { color: var(--accent); text-decoration: none; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 input, select, button { font: inherit; }
 input, select { background: var(--panel2); border: 1px solid var(--line); color: var(--text);
   border-radius: 8px; padding: 8px 10px; }

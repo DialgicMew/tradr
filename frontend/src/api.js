@@ -19,6 +19,7 @@ export const api = {
 
   holdings: () => req("/holdings"),
   summary: () => req("/portfolio/summary"),
+  info: (t) => req(`/info/${t}`),
   history: (t) => req(`/history/${t}`),
 
   trades: () => req("/trades"),

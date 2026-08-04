@@ -55,7 +55,7 @@ class TradeIn(BaseModel):
     # Only meaningful for hand-entered fills with no signal behind them: a manual buy you
     # funded from dry powder yourself (a dip-buy you placed without going through Approve),
     # or a manual sell whose proceeds should recycle back into it — mirrors what
-    # confirm_signal does for double_down/watch_opportunity and trim (Rule 3/8).
+    # confirm_signal does for a reserve-funded buy and trim (Rule 3/8).
     fund_from_reserve: bool = False
 
 
@@ -81,3 +81,5 @@ class HoldingOut(BaseModel):
     value: float | None
     gain_pct: float | None
     weight: float | None
+    day_change_pct: float | None = None
+    day_change_abs: float | None = None

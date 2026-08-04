@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { api } from "./api.js";
 import Home from "./pages/Home.jsx";
+import Ticker from "./pages/Ticker.jsx";
 import Trades from "./pages/Trades.jsx";
 import Config from "./pages/Config.jsx";
 import Alerts from "./pages/Alerts.jsx";
@@ -41,6 +42,7 @@ export default function App() {
       <div className="container">
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/ticker/:ticker" element={<Ticker />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/trades" element={<Trades />} />
           <Route path="/config" element={<Config />} />

@@ -11,6 +11,7 @@ manual UI entry. Swap in a paid provider later without touching the engine.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import ClassVar, Protocol
 
 import httpx
@@ -72,8 +73,42 @@ class YahooProvider:
         ret_30d = price / closes[-31] - 1 if len(closes) > 31 else 0.0
         ret_60d = price / closes[-61] - 1 if len(closes) > 61 else 0.0
         vol_20d = _trailing_vol(closes)
+        prev_close = float(closes[-2]) if len(closes) >= 2 else None
         return MarketData(ticker=ticker.upper(), price=price, high_52w=high_52w,
-                          ret_30d=ret_30d, ret_60d=ret_60d, fwd_pe=None, vol_20d=vol_20d)
+                          ret_30d=ret_30d, ret_60d=ret_60d, fwd_pe=None, vol_20d=vol_20d,
+                          prev_close=prev_close)
+
+    def get_info(self, ticker: str) -> dict | None:
+        """Returns {name} for a ticker using a minimal 1-day fetch."""
+        try:
+            r = self._client.get(self.URL.format(ticker=ticker.upper()),
+                                  params={"range": "1d", "interval": "1d"})
+            r.raise_for_status()
+            meta = r.json()["chart"]["result"][0].get("meta", {})
+            name = meta.get("shortName") or meta.get("longName") or None
+        except Exception:
+            return None
+        return {"name": name}
+
+    def get_history(self, ticker: str) -> list[dict] | None:
+        """Returns [{as_of, price, high_52w}] for ~1 year of daily closes, for charting."""
+        try:
+            r = self._client.get(self.URL.format(ticker=ticker.upper()),
+                                  params={"range": "1y", "interval": "1d"})
+            r.raise_for_status()
+            res = r.json()["chart"]["result"][0]
+            meta = res.get("meta", {})
+            high_52w = float(meta.get("fiftyTwoWeekHigh") or 0) or None
+            timestamps = res.get("timestamp", [])
+            closes = res["indicators"]["quote"][0]["close"]
+        except Exception:
+            return None
+        result = []
+        for ts, price in zip(timestamps, closes):
+            if price is not None and ts is not None:
+                d = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+                result.append({"as_of": d.isoformat(), "price": float(price), "high_52w": high_52w})
+        return result or None
 
 
 class StooqProvider:

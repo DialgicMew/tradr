@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tradr.api import schemas as sc
+from tradr.config import get_settings
 from tradr.db import SessionLocal, init_db, session_scope
 from tradr.db.models import (
     FlagRow,
@@ -23,6 +24,7 @@ from tradr.db.models import (
     UniverseRow,
 )
 from tradr.engine import costs as engine_costs
+from tradr.market import get_provider as get_market_provider
 from tradr.runner import run_once
 from tradr.services import config_service as cfg
 from tradr.services import ledger as ledger_svc
@@ -232,26 +234,34 @@ def add_reserve(body: sc.ReserveIn, s: Session = Depends(get_db)) -> dict:
 # --- holdings / portfolio ----------------------------------------------------
 
 def _latest_prices(s: Session) -> dict[str, float]:
-    prices: dict[str, float] = {}
-    for row in s.scalars(select(MarketSnapshotRow).order_by(MarketSnapshotRow.id)).all():
-        prices[row.ticker] = row.price  # later rows overwrite → latest wins
-    return prices
+    return {row.ticker: row.price
+            for row in s.scalars(select(MarketSnapshotRow)).all()}
+
+
+def _latest_two_prices(s: Session) -> dict[str, tuple[float, float | None]]:
+    """Returns {ticker: (price, prev_close)} from the single latest snapshot per ticker."""
+    return {row.ticker: (row.price, row.prev_close)
+            for row in s.scalars(select(MarketSnapshotRow)).all()}
 
 
 @app.get("/api/holdings")
 def holdings(s: Session = Depends(get_db)) -> list[sc.HoldingOut]:
-    prices = _latest_prices(s)
+    price_pairs = _latest_two_prices(s)
+    prices = {t: v[0] for t, v in price_pairs.items()}
     positions = ledger_svc.derive_positions(s)
     total = sum((prices.get(p.ticker, 0.0) * p.shares) for p in positions) or 0.0
     out = []
     for p in positions:
-        price = prices.get(p.ticker)
-        value = price * p.shares if price else None
-        gain = (price / p.avg_basis - 1) if price and p.avg_basis else None
+        curr, prev = price_pairs.get(p.ticker, (None, None))
+        value = curr * p.shares if curr else None
+        gain = (curr / p.avg_basis - 1) if curr and p.avg_basis else None
         weight = (value / total) if (value and total) else None
+        day_chg_pct = (curr / prev - 1) if curr and prev else None
+        day_chg_abs = (curr - prev) if curr and prev else None
         out.append(sc.HoldingOut(
             ticker=p.ticker, tier=p.tier, asset_class=p.asset_class, shares=p.shares,
-            avg_basis=p.avg_basis, price=price, value=value, gain_pct=gain, weight=weight))
+            avg_basis=p.avg_basis, price=curr, value=value, gain_pct=gain, weight=weight,
+            day_change_pct=day_chg_pct, day_change_abs=day_chg_abs))
     return out
 
 
@@ -275,6 +285,7 @@ def portfolio_summary(s: Session = Depends(get_db)) -> dict:
         # Transaction-cost feedback loop (Rule 8) — what the trading itself has cost.
         "fees_ytd": ledger_svc.fees_paid(s, since=date(date.today().year, 1, 1)),
         "fees_all_time": ledger_svc.fees_paid(s),
+        "xirr": ledger_svc.portfolio_xirr(s, invested),
         "allocation": [
             {"ticker": p.ticker, "value": prices.get(p.ticker, 0.0) * p.shares, "tier": p.tier}
             for p in positions
@@ -282,8 +293,25 @@ def portfolio_summary(s: Session = Depends(get_db)) -> dict:
     }
 
 
+@app.get("/api/info/{ticker}")
+def ticker_info(ticker: str) -> dict:
+    provider = get_market_provider(get_settings().market_data_provider)
+    if hasattr(provider, "get_info"):
+        info = provider.get_info(ticker.upper())
+        if info:
+            return {"ticker": ticker.upper(), **info}
+    return {"ticker": ticker.upper(), "name": None}
+
+
 @app.get("/api/history/{ticker}")
 def price_history(ticker: str, s: Session = Depends(get_db)) -> list[dict]:
+    # Try live 1-year history from the configured market provider first.
+    provider = get_market_provider(get_settings().market_data_provider)
+    if hasattr(provider, "get_history"):
+        live = provider.get_history(ticker.upper())
+        if live:
+            return live
+    # Fall back to stored engine snapshots.
     rows = s.scalars(
         select(MarketSnapshotRow).where(MarketSnapshotRow.ticker == ticker.upper())
         .order_by(MarketSnapshotRow.as_of)

@@ -133,6 +133,23 @@ def derive_positions(s: Session) -> list[DerivedPosition]:
     return sorted(out, key=lambda p: p.ticker)
 
 
+def last_buy_dates(s: Session) -> dict[str, date]:
+    """Most recent non-voided BUY fill date per ticker (rolling cadence anchor, Rule 7).
+
+    A dip-buy resets the clock the same as a routine contribution — both are a buy — so
+    this reads every buy lot rather than distinguishing by source_signal_id/rule.
+    """
+    lots = s.scalars(
+        select(Lot).where(Lot.voided.is_(False), Lot.side == "buy")
+    ).all()
+    out: dict[str, date] = {}
+    for lot in lots:
+        prev = out.get(lot.ticker)
+        if prev is None or lot.trade_date > prev:
+            out[lot.ticker] = lot.trade_date
+    return out
+
+
 def fees_paid(s: Session, *, since: date | None = None) -> float:
     """Total estimated transaction cost across recorded fills (Rule 8).
 
@@ -144,6 +161,55 @@ def fees_paid(s: Session, *, since: date | None = None) -> float:
     if since is not None:
         q = q.where(Lot.trade_date >= since)
     return float(sum((lot.fee or 0.0) for lot in s.scalars(q).all()))
+
+
+def _xirr_solve(cashflows: list[tuple[date, float]]) -> float | None:
+    """Newton-Raphson XIRR. cashflows = [(date, signed_amount), ...].
+    Buys are negative (money out), sells and terminal value are positive (money in).
+    Returns annualised rate as a decimal, or None if it can't converge.
+    """
+    if len(cashflows) < 2:
+        return None
+    t0 = min(d for d, _ in cashflows)
+    years = [(d - t0).days / 365.0 for d, _ in cashflows]
+    amounts = [cf for _, cf in cashflows]
+
+    def npv(r: float) -> float:
+        return sum(cf / (1.0 + r) ** t for cf, t in zip(amounts, years))
+
+    def dnpv(r: float) -> float:
+        return sum(-cf * t / (1.0 + r) ** (t + 1.0) for cf, t in zip(amounts, years))
+
+    r = 0.1
+    for _ in range(300):
+        n, dn = npv(r), dnpv(r)
+        if abs(dn) < 1e-14:
+            break
+        step = n / dn
+        r -= step
+        if r <= -1.0:
+            return None
+        if abs(step) < 1e-7:
+            break
+    scale = sum(abs(a) for a in amounts) or 1.0
+    return r if abs(npv(r)) / scale < 1e-4 else None
+
+
+def portfolio_xirr(s: Session, current_value: float) -> float | None:
+    """XIRR from trade history plus current market value as the terminal cash flow."""
+    lots = s.scalars(
+        select(Lot).where(Lot.voided.is_(False)).order_by(Lot.trade_date, Lot.id)
+    ).all()
+    if not lots:
+        return None
+    cashflows: list[tuple[date, float]] = []
+    for lot in lots:
+        if lot.side == "buy":
+            cashflows.append((lot.trade_date, -(lot.qty * lot.price + (lot.fee or 0.0))))
+        else:
+            cashflows.append((lot.trade_date, lot.qty * lot.price - (lot.fee or 0.0)))
+    cashflows.append((date.today(), current_value))
+    return _xirr_solve(cashflows)
 
 
 def reserve_balance(s: Session) -> float:
