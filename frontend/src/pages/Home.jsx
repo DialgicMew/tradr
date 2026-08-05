@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { cls, pct, pctSign, usd, usd2 } from "../fmt.js";
 import RunButton from "../components/RunButton.jsx";
+import { COMPANY_NAMES } from "../companyNames.js";
 
 function Stat({ label, value, klass }) {
   return (
@@ -46,19 +47,13 @@ function sortHoldings(holdings, sortKey, sortDir) {
 export default function Home() {
   const [summary, setSummary] = useState(null);
   const [holdings, setHoldings] = useState([]);
-  const [names, setNames] = useState({});
   const [pending, setPending] = useState(0);
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
 
   const load = () => {
     api.summary().then(setSummary);
-    api.holdings().then((hs) => {
-      setHoldings(hs);
-      Promise.all(hs.map((h) => api.info(h.ticker).then((r) => [h.ticker, r?.name || null]))).then(
-        (pairs) => setNames(Object.fromEntries(pairs))
-      );
-    });
+    api.holdings().then(setHoldings);
     api.signals("PENDING").then((s) => setPending(s.length));
   };
   useEffect(() => { load(); }, []);
@@ -135,16 +130,16 @@ export default function Home() {
                       <Link to={`/ticker/${h.ticker}`} style={{ fontWeight: 700 }}>
                         {h.ticker}
                       </Link>
-                      {names[h.ticker] && (
+                      {COMPANY_NAMES[h.ticker] && (
                         <div
-                          title={names[h.ticker]}
+                          title={COMPANY_NAMES[h.ticker]}
                           style={{
                             fontSize: 11, color: "var(--muted)", marginTop: 2,
                             maxWidth: 120, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: "default",
                           }}
                         >
-                          {names[h.ticker]}
+                          {COMPANY_NAMES[h.ticker]}
                         </div>
                       )}
                     </td>
